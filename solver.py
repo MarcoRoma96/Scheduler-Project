@@ -19,6 +19,7 @@ from src.common.tools import get_subproblem_instance_from_master_result, compose
 from src.common.tools import is_combination_to_do, get_slim_subproblem_instance_from_fat
 from src.common.tools import get_all_possible_fat_master_requests, get_all_possible_slim_master_requests
 from src.common.tools import remove_requests_not_present
+from src.common.solver_factory import get_solver_name, build_solver
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result
 from src.common.file_load_and_dump import encode_final_result, decode_subproblem_result, encode_cores, encode_cache_matching
@@ -184,17 +185,22 @@ def solve_instance(
     best_cache_result_value_so_far = None
     best_subproblem_result_value_so_far = None
 
-    master_opt = pyo.SolverFactory('gurobi')
-    master_opt.options['TimeLimit'] = config['master']['time_limit']
-    master_opt.options['SoftMemLimit'] = config['master']['memory_limit']
+    solver_name = get_solver_name(config)
 
-    subproblem_opt = pyo.SolverFactory('gurobi')
-    subproblem_opt.options['TimeLimit'] = config['subproblem']['time_limit']
-    subproblem_opt.options['SoftMemLimit'] = config['subproblem']['memory_limit']
+    master_opt = build_solver(
+        solver_name,
+        config['master']['time_limit'],
+        config['master']['memory_limit'])
 
-    cache_opt = pyo.SolverFactory('gurobi')
-    cache_opt.options['TimeLimit'] = config['cache']['time_limit']
-    cache_opt.options['SoftMemLimit'] = config['cache']['memory_limit']
+    subproblem_opt = build_solver(
+        solver_name,
+        config['subproblem']['time_limit'],
+        config['subproblem']['memory_limit'])
+
+    cache_opt = build_solver(
+        solver_name,
+        config['cache']['time_limit'],
+        config['cache']['memory_limit'])
 
     # Copia dell'istanza master nella cartella dei risultati
     with open(output_path.joinpath('master_instance.json'), 'w') as file:
@@ -265,7 +271,10 @@ def solve_instance(
         # Risoluzione del problema master
         print(f'[iter {iteration_index}] [MASTER] Starting master solving...', end='')
         start = time.perf_counter()
-        master_opt.solve(master_model, logfile=iteration_path.joinpath('master_log.log'), warmstart=True)
+        solve_kwargs = {'logfile': iteration_path.joinpath('master_log.log')}
+        if solver_name == 'gurobi':
+            solve_kwargs['warmstart'] = True
+        master_opt.solve(master_model, **solve_kwargs)
         end = time.perf_counter()
         total_time_elapsed += end - start
         print(f'done ({end - start:.04}s)', end='')

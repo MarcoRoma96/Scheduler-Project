@@ -34,6 +34,9 @@ base:
     # sottoproblema.
     structure_type: 'slim-fat' # 'slim-fat', 'fat-slim', 'fat-fat'
 
+    # Solver MILP usato in tutte le fasi della pipeline iterativa
+    solver_name: 'gurobi' # 'gurobi', 'glpk'
+
     # Informazioni sul calcolo dei core (tagli di correttezza)
     core_type: 'generalist' # generalist, basic, reduced, pruned
     

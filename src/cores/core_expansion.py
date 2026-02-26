@@ -1,8 +1,8 @@
-import pyomo.environ as pyo
 import time
 
 from src.common.custom_types import FatCore, SlimCore, DayName, MasterInstance, ServiceName, Service
 from src.common.custom_types import PatientService, PatientServiceOperator, SlimArc, FatArc, CareUnitName
+from src.common.solver_factory import get_solver_name, build_solver
 from src.milp_models.max_matching_model import get_max_matching_model, get_matching_from_max_matching_model, ban_matching_from_model
 from src.milp_models.subsumption_model import get_subsumption_model, subsumption_model_has_solution
 
@@ -113,9 +113,11 @@ def expand_cores(
 
     expanded_cores: list[FatCore] | list[SlimCore] = []
 
-    opt = pyo.SolverFactory('gurobi')
-    opt.options['TimeLimit'] = config['core_expansion']['time_limit']
-    opt.options['SoftMemLimit'] = config['core_expansion']['memory_limit']
+    solver_name = get_solver_name(config)
+    opt = build_solver(
+        solver_name,
+        config['core_expansion']['time_limit'],
+        config['core_expansion']['memory_limit'])
 
     print(f'Expanding {len(cores)} cores')
     for core_index, core in enumerate(cores):
@@ -191,9 +193,11 @@ def get_subsumptions(instance: MasterInstance, config) -> dict[CareUnitName, dic
     for day in instance.days.values():
         care_unit_names.update(day.care_units.keys())
     
-    opt = pyo.SolverFactory('gurobi')
-    opt.options['TimeLimit'] = config['subsumption']['time_limit']
-    opt.options['SoftMemLimit'] = config['subsumption']['memory_limit']
+    solver_name = get_solver_name(config)
+    opt = build_solver(
+        solver_name,
+        config['subsumption']['time_limit'],
+        config['subsumption']['memory_limit'])
 
     # Generazione della relazione di minore o uguale per ogni unità di cura
     for care_unit_name in care_unit_names:

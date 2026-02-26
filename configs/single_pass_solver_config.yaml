@@ -29,6 +29,9 @@ base:
     # Configurazione che specifica la struttura dei modelli della risoluzione.
     problem_type: 'monolithic' # 'monolithic', 'fat-master', 'slim-master', 'fat-subproblem', 'slim-subproblem'
 
+    # Solver MILP utilizzato per la risoluzione single-pass
+    solver_name: 'gurobi' # 'gurobi', 'glpk'
+
     # Informazioni relative al solutore del problema master
     solver:
         time_limit: 600 # in secondi

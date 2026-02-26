@@ -1,10 +1,10 @@
 import time
-import pyomo.environ as pyo
 
 from src.common.custom_types import FatCore, PatientServiceOperator, Service, SlimSubproblemResult
 from src.common.custom_types import ServiceName, SlimCore, PatientService, ServiceOperator
 from src.common.custom_types import FatSubproblemInstance, SlimSubproblemInstance
 from src.common.custom_types import DayName, FatSubproblemPatient, SlimSubproblemPatient
+from src.common.solver_factory import get_solver_name, build_solver
 from src.checkers.check_subproblem_instance import check_fat_subproblem_instance, check_slim_subproblem_instance
 from src.milp_models.subproblem_model import get_fat_subproblem_model, get_slim_subproblem_model
 from src.milp_models.subproblem_model import get_result_from_fat_subproblem_model, get_result_from_slim_subproblem_model
@@ -126,9 +126,11 @@ def is_instance_fully_satisfiable(
     else:
         model = get_fat_subproblem_model(instance, config['core_pruning']['additional_info'])
     
-    opt = pyo.SolverFactory('gurobi')
-    opt.options['TimeLimit'] = config['core_pruning']['time_limit']
-    opt.options['SoftMemLimit'] = config['core_pruning']['memory_limit']
+    solver_name = get_solver_name(config)
+    opt = build_solver(
+        solver_name,
+        config['core_pruning']['time_limit'],
+        config['core_pruning']['memory_limit'])
 
     start = time.perf_counter()
     opt.solve(model, logfile=None)

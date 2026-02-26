@@ -1,8 +1,6 @@
 from argparse import ArgumentParser
-import pyomo.environ as pyo
 from pathlib import Path
 import logging
-import shutil
 import json
 import yaml
 import copy
@@ -11,44 +9,26 @@ import time
 # Soppressione dell'output a terminale degli avvertimenti di Pyomo
 logging.getLogger('pyomo.core').setLevel(logging.ERROR)
 
-from src.common.custom_types import MasterInstance, Cache, FatCore, SlimCore, DayName, SlimMasterResult
+from src.common.custom_types import MasterInstance, SlimMasterResult
 from src.common.custom_types import FatSubproblemResult, SlimSubproblemResult, FinalResult
 from src.common.custom_types import FatMasterResult, FatSubproblemInstance, SlimSubproblemInstance
-from src.common.custom_types import CacheMatch, PatientServiceOperator, IterationName
-from src.common.tools import get_subproblem_instance_from_master_result, compose_final_result
-from src.common.tools import is_combination_to_do, get_slim_subproblem_instance_from_fat
-from src.common.tools import get_all_possible_fat_master_requests, get_all_possible_slim_master_requests
-from src.common.tools import remove_requests_not_present
+from src.common.tools import is_combination_to_do
+from src.common.solver_factory import get_solver_name, build_solver
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result, decode_subproblem_instance
-from src.common.file_load_and_dump import encode_final_result, decode_subproblem_result, encode_cores, encode_cache_matching
+from src.common.file_load_and_dump import encode_final_result
 
 from src.checkers.check_master_instance import check_master_instance
 from src.checkers.check_master_result import check_fat_master_result, check_slim_master_result
 from src.checkers.check_subproblem_instance import check_fat_subproblem_instance, check_slim_subproblem_instance
 from src.checkers.check_subproblem_result import check_subproblem_result
 from src.checkers.check_final_result import check_final_result
-from src.checkers.check_cores import check_cores
 
 from src.milp_models.master_model import get_fat_master_model, get_slim_master_model
 from src.milp_models.master_model import get_result_from_fat_master_model, get_result_from_slim_master_model
-from src.milp_models.master_model import add_core_constraints_to_fat_master_model, add_core_constraints_to_slim_master_model
 from src.milp_models.subproblem_model import get_fat_subproblem_model, get_slim_subproblem_model
 from src.milp_models.subproblem_model import get_result_from_fat_subproblem_model, get_result_from_slim_subproblem_model
-from src.milp_models.cache_model import get_cache_model, get_result_from_cache_model
 from src.milp_models.monolithic_model import get_monolithic_model, get_result_from_monolithic_model
-
-from src.cache.cache import add_final_result_to_cache, fix_cache_final_result
-from src.cache.cache import get_previous_cache_day_iterations
-
-from src.cores.generalist_cores import get_generalist_cores
-from src.cores.basic_cores import get_basic_fat_cores, get_basic_slim_cores
-from src.cores.reduced_cores import get_reduced_fat_cores, get_reduced_slim_cores
-from src.cores.pruned_cores import get_pruned_fat_cores, get_pruned_slim_cores
-from src.cores.core_expansion import expand_cores, get_subsumptions
-from src.cores.tools import aggregate_core_lists
-
-from src.analyzers.tools import get_result_value, get_day_number_used_by_patients
 
 
 # Questo script può essere chiamato solo direttamente dalla linea di comando
@@ -158,9 +138,11 @@ def solve_instance(
     for line in summary_lines:
         print(line)
 
-    opt = pyo.SolverFactory('gurobi')
-    opt.options['TimeLimit'] = config['solver']['time_limit']
-    opt.options['SoftMemLimit'] = config['solver']['memory_limit']
+    solver_name = get_solver_name(config)
+    opt = build_solver(
+        solver_name,
+        config['solver']['time_limit'],
+        config['solver']['memory_limit'])
 
     # Copia dell'istanza nella cartella dei risultati
     with open(output_path.joinpath('instance.json'), 'w') as file:
