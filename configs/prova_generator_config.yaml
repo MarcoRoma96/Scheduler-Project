@@ -1,0 +1,23 @@
+groups:
+  prova_small_5pat_4cu_2op:
+    instance_number: 2
+    patient_number: 5
+    care_unit_number: 4
+    operator_number: 2
+
+base:
+  seed: 42
+  instance_number: 8
+  day_number: 32
+  care_unit_number: 4
+  operator_number: 2
+  operator_duration: 32
+  service_number: 32
+  service_duration:
+    min: 2
+    max: 12
+    mode: 3
+  patient_number: 64
+  request_over_disponibility_ratio: 1.25
+  window_max_size: 8
+  same_window_percentage: 0.2

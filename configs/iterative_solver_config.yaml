@@ -1,136 +1,62 @@
-# Aggiungere un oggetto per ogni processo risolutivo. Le proprietà già
-# presenti nel template di base saranno sovrascritte. La chiave dell'oggetto
-# diventerà parte del nome della cartella contenente i risultati.
 groups:
-
-    test:
-        groups_to_do: ['all']
-
-
-# Template di base che sarà ripetuto per ognuno dei processi: i valori già
-# presenti verranno sovrascritti.
-base:
-
-    # Elenco dei nomi di processi da eseguire e da evitare. Aggiungere 'all' per
-    # selezionare tutto.
-    configs_to_do: ['all']
-    configs_to_avoid: []
-
-    # Elenco dei nomi di gruppi di istanze da eseguire e da evitare. Aggiungere
-    # 'all' per selezionare tutto.
-    groups_to_do: ['all']
-    groups_to_avoid: []
-
-    # Elenco dei nomi di istanze da eseguire e da evitare. Aggiungere 'all'
-    # per selezionare tutto.
-    instances_to_do: ['all']
-    instances_to_avoid: []
-
-    # Configurazione che specifica la struttura dei modelli della risoluzione.
-    # 'fat' specifica che ci sarà da prendere la decisione dell'operatore.
-    # Il primo valore della coppia descrive il master mentre il secondo il
-    # sottoproblema. Nella versione 'fat-fat' è inoltre possibile specificare la
-    # flag 'preemptive_forbidding' nelle informazioni aggiuntive del
-    # sottoproblema.
-    structure_type: 'slim-fat' # 'slim-fat', 'fat-slim', 'fat-fat'
-
-    # Solver MILP usato in tutte le fasi della pipeline iterativa
-    solver_name: 'gurobi' # 'gurobi', 'glpk'
-
-    # Informazioni sul calcolo dei core (tagli di correttezza)
-    core_type: 'generalist' # generalist, basic, reduced, pruned
-    
-    # Dopo la potatura dei core prova a rimuovere una alla volta le componenti
-    # e tenta la soddisfacibilità per controllare che il sottoinsieme di
-    # richieste restituito sia effettivamente irriducibile (ogni componente sia
-    # necessaria)
-    post_pruning_irreducibility: false
-    
-    # Tipologie di anonimizzazione dei core
-    core_patient_expansion: false
-    core_service_expansion: false
-    core_operator_expansion: false # utile solo per master 'fat'
-    core_day_expansion: false
-
-    # Numero massimo di core che possono essere generati dall'anonimizzazione a
-    # partire da quello correntemente analizzato
-    max_single_core_expansion: 32
-
-    # Flag che controlla l'utilizzo della cache per ottenere soluzioni da
-    # risultati precedenti
-    use_true_cache: false
-
-    # Opzione che controlla l'utilizzo del modello di selezione delle colonne della matrice della cache
-    use_cache_selection_model: false
-
-    # Numero massimo di iterazioni da eseguire
-    max_iteration: 50
-
-    # Tempo totale di risoluzione oltre il quale la risoluzione si fermerà.
-    # Questo valore non tiene conto dei tempi intermedi di scrittura su file.
-    total_time_limit: 7200
-
-    # Se la soluzione del sottoproblema raggiunge questa percentuale rispetto a
-    # quella proposta dal master la risoluzione si ferma
-    early_stop_optimum_approximation_percentage: 1.0
-    
-    # Informazioni relative al solutore del problema master
+  test:
+    groups_to_do:
+    - all
+  prova:
+    groups_to_do:
+    - all
+    instances_to_do:
+    - all
+    solver_name: glpk
+    total_time_limit: 900
     master:
-        time_limit: 600 # in secondi
-        memory_limit: 16 # in GB
-        additional_info: [
-
-            # Penalizza in funzione obiettivo i pazienti che utilizzano tanti
-            # giorni. Questa flag impatta anche sul calcolo della cache
-            # provocando instabilità
-            'minimize_hospital_accesses',
-
-            # Opzione che aggiunge i tagli di ottimalità, ovvero quelli che
-            # specificano che non si può ottenere meglio di qualcosa se sono presenti
-            # almento tanti zeri quanti quelli dell'iterazione che li genera
-            # *** IMPLEMENTATO SOLO PER SLIM MASTER ***
-            'use_optimality_cuts'
-        ]
-    
-    # Informazioni relative al solutore del sottoproblema
-    subproblem:
-        time_limit: 30 # in secondi
-        memory_limit: 16 # in GB
-        additional_info: [
-
-            # Utilizzato solo nella versione 'fat'. La durata totale dei servizi
-            # assegnati ad un singolo operatore non può essere maggiore della
-            # durata dell'operatore stesso. Questo taglio coincide coi vincoli
-            # di capacità sull'operatore nel caso 'slim' e pertanto sarebbe
-            # duplicato.
-            'use_redundant_operator_cut',
-
-            # Utilizzato solo nella struttura 'fat-fat'. Se il sottoproblema
-            # soddisfa comunque tutte le richieste proposte dal master ma con
-            # operatori differenti (non avendo quindi la componente a 1000 della
-            # funzione obiettivo), aggiungi al master un taglio di tipo core
-            # per evitare nuovamente tale richiesta. Questo taglio è ridondante
-            # in quanto non impatta sul valore della funzione obiettivo finale.
-            # 'preemptive_forbidding'
-        ]
-    
-    # Informazioni relative al solutore della cache
-    cache:
-        time_limit: 60 # in secondi
-        memory_limit: 16 # in GB
-    
-    # Informazioni relative al solutore della potatura dei core
-    core_pruning:
-        time_limit: 30 # in secondi
-        memory_limit: 16 # in GB
-        additional_info: ['use_redundant_operator_cut']
-    
-    # Informazioni relative al solutore dell'espansione dei core
-    core_expansion:
-        time_limit: 30 # in secondi
-        memory_limit: 16 # in GB
-
-    # Informazioni relative al solutore delle sussunzioni sui giorni
-    subsumption:
-        time_limit: 30 # in secondi
-        memory_limit: 16 # in GB
+      time_limit: 300
+base:
+  configs_to_do:
+  - prova
+  configs_to_avoid: []
+  groups_to_do:
+  - all
+  groups_to_avoid: []
+  instances_to_do:
+  - all
+  instances_to_avoid: []
+  structure_type: slim-fat
+  solver_name: gurobi
+  core_type: generalist
+  post_pruning_irreducibility: false
+  core_patient_expansion: false
+  core_service_expansion: false
+  core_operator_expansion: false
+  core_day_expansion: false
+  max_single_core_expansion: 32
+  use_true_cache: false
+  use_cache_selection_model: false
+  max_iteration: 100000000
+  total_time_limit: 7200
+  early_stop_optimum_approximation_percentage: 1.0
+  master:
+    time_limit: 600
+    memory_limit: 16
+    additional_info:
+    - minimize_hospital_accesses
+    - use_optimality_cuts
+  subproblem:
+    time_limit: 30
+    memory_limit: 16
+    additional_info:
+    - use_redundant_operator_cut
+  cache:
+    time_limit: 60
+    memory_limit: 16
+  core_pruning:
+    time_limit: 30
+    memory_limit: 16
+    additional_info:
+    - use_redundant_operator_cut
+  core_expansion:
+    time_limit: 30
+    memory_limit: 16
+  subsumption:
+    time_limit: 30
+    memory_limit: 16

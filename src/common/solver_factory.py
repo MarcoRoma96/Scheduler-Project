@@ -33,3 +33,35 @@ def build_solver(
             opt.options['memlim'] = max(1, int(float(memory_limit) * 1024))
 
     return opt
+
+
+def _termination_name(result) -> str:
+    try:
+        return str(result.solver.termination_condition).strip().lower()
+    except Exception:
+        return "unknown"
+
+
+def _status_name(result) -> str:
+    try:
+        return str(result.solver.status).strip().lower()
+    except Exception:
+        return "unknown"
+
+
+def has_usable_solution(result) -> bool:
+    """Ritorna True se il solver ha prodotto una soluzione leggibile da Pyomo."""
+
+    termination = _termination_name(result)
+    if termination in {"optimal", "feasible", "locallyoptimal", "globallyoptimal"}:
+        return True
+
+    # Alcuni solver in time-limit possono comunque restituire un incumbent.
+    try:
+        return len(result.solution) > 0
+    except Exception:
+        return False
+
+
+def describe_solver_result(result) -> str:
+    return f"status={_status_name(result)}, termination={_termination_name(result)}"

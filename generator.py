@@ -3,8 +3,8 @@ from pathlib import Path
 import random
 import json
 import yaml
-import copy
 
+from src.common.config_merge import merge_group_config
 from src.generators.master_generator import generate_master_instance
 from src.generators.subproblem_generator import generate_subproblem_instance
 
@@ -40,9 +40,7 @@ for group_name, config_diff_from_base in config['groups'].items():
 
     # Creazione della configurazione del gruppo corrente, sovrascrivendo alcuni
     # parametri
-    group_config = copy.deepcopy(base_config)
-    for key, value in config_diff_from_base.items():
-        group_config[key] = value
+    group_config = merge_group_config(base_config, config_diff_from_base)
     
     # Eventuale creazione della cartella di output del gruppo
     group_path = output_path.joinpath(group_name)

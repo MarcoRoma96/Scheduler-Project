@@ -1,0 +1,121 @@
+# Aggiungere un oggetto per ogni gruppo di istanza da generare. Le proprietà già
+# presenti nel template di base saranno sovrascritte. La chiave dell'oggetto
+# diventerà il nome della cartella del gruppo.
+groups:
+
+    32pat_4cu_2op:
+        seed: 100
+        patient_number: 32
+        care_unit_number: 4
+        operator_number: 2
+    32pat_8cu_1op:
+        seed: 101
+        patient_number: 32
+        care_unit_number: 8
+        operator_number: 1
+    32pat_2cu_4op:
+        seed: 102
+        patient_number: 32
+        care_unit_number: 2
+        operator_number: 4
+    
+    64pat_4cu_2op:
+        seed: 103
+        patient_number: 64
+        care_unit_number: 4
+        operator_number: 2
+    64pat_8cu_1op:
+        seed: 104
+        patient_number: 64
+        care_unit_number: 8
+        operator_number: 1
+    64pat_2cu_4op:
+        seed: 105
+        patient_number: 64
+        care_unit_number: 2
+        operator_number: 4
+    
+    128pat_4cu_2op:
+        seed: 106
+        patient_number: 128
+        care_unit_number: 4
+        operator_number: 2
+    
+    32pat_4cu_2op_10like:
+        seed: 107
+        patient_number: 32
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.1
+    32pat_4cu_2op_25like:
+        seed: 108
+        patient_number: 32
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.25
+    32pat_4cu_2op_50like:
+        seed: 109
+        patient_number: 32
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.5
+    
+    64pat_4cu_2op_10like:
+        seed: 110
+        patient_number: 64
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.1
+    64pat_4cu_2op_25like:
+        seed: 111
+        patient_number: 64
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.25
+    64pat_4cu_2op_50like:
+        seed: 112
+        patient_number: 64
+        care_unit_number: 4
+        operator_number: 2
+        same_window_percentage: 0.5
+
+# Template di base che sarà ripetuto per ognuno dei gruppi: i valori già
+# presenti verranno sovrascritti.
+base:
+
+    # Seme per la generazione pseudocasuale del gruppo
+    seed: 42
+
+    # Numero di istanze nel gruppo
+    instance_number: 8
+
+    # Numero di giorni
+    day_number: 32
+
+    # Numero di unità di cura di ogni giorno
+    care_unit_number: 4
+
+    # Numero di operatori in ogni unità di cura
+    operator_number: 2
+
+    # Durata di ogni operatore, in slot temporali
+    operator_duration: 32
+
+    # Numero di servizi da cui le richieste saranno scelte
+    service_number: 32
+
+    # Durata dei servizi, in slot temporali (distribuzione triangolare)
+    service_duration: {min: 2, max: 12, mode: 3}
+
+    # Numero di pazienti in cui suddividere le richieste
+    patient_number: 64
+
+    # Percentuale di riempimento della disponibilità totale dell'istanza
+    request_over_disponibility_ratio: 1.25
+
+    # Massima ampiezza di ogni finestra di richiesta (in giorni)
+    window_max_size: 8
+
+    # Percentuale di volte in cui una finestra sarà uguale ad un'altra già
+    # presente
+    same_window_percentage: 0.0

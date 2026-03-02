@@ -5,7 +5,6 @@ import logging
 import shutil
 import json
 import yaml
-import copy
 import time
 
 # Soppressione dell'output a terminale degli avvertimenti di Pyomo
@@ -19,7 +18,8 @@ from src.common.tools import get_subproblem_instance_from_master_result, compose
 from src.common.tools import is_combination_to_do, get_slim_subproblem_instance_from_fat
 from src.common.tools import get_all_possible_fat_master_requests, get_all_possible_slim_master_requests
 from src.common.tools import remove_requests_not_present
-from src.common.solver_factory import get_solver_name, build_solver
+from src.common.config_merge import merge_group_config
+from src.common.solver_factory import get_solver_name, build_solver, has_usable_solution, describe_solver_result
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result
 from src.common.file_load_and_dump import encode_final_result, decode_subproblem_result, encode_cores, encode_cache_matching
@@ -79,9 +79,7 @@ def get_preliminary_solving_info(
 
         # Creazione della configurazione del gruppo corrente, sovrascrivendo
         # alcuni parametri
-        group_config = copy.deepcopy(base_config)
-        for key, value in config_diff_from_base.items():
-            group_config[key] = value
+        group_config = merge_group_config(base_config, config_diff_from_base)
 
         # Controllo se la configurazione deve essere esclusa dalla risoluzione
         if not is_combination_to_do(config_name, None, None, group_config):
@@ -271,10 +269,12 @@ def solve_instance(
         # Risoluzione del problema master
         print(f'[iter {iteration_index}] [MASTER] Starting master solving...', end='')
         start = time.perf_counter()
-        solve_kwargs = {'logfile': iteration_path.joinpath('master_log.log')}
+        solve_kwargs = {
+            'logfile': iteration_path.joinpath('master_log.log'),
+            'tee': True}
         if solver_name == 'gurobi':
             solve_kwargs['warmstart'] = True
-        master_opt.solve(master_model, **solve_kwargs)
+        master_solve_result = master_opt.solve(master_model, **solve_kwargs)
         end = time.perf_counter()
         total_time_elapsed += end - start
         print(f'done ({end - start:.04}s)', end='')
@@ -282,6 +282,9 @@ def solve_instance(
             print(' [TIME LIMIT]')
         else:
             print('')
+        if not has_usable_solution(master_solve_result):
+            print(f'[iter {iteration_index}] [MASTER] ERROR: solver returned no usable solution ({describe_solver_result(master_solve_result)})')
+            return 7
 
         if config['structure_type'] in ['fat-slim', 'fat-fat']:
             master_result = get_result_from_fat_master_model(master_model)
@@ -320,7 +323,10 @@ def solve_instance(
             # Risoluzione del modello MILP della cache
             print(f'Start solving...', end='')
             start = time.perf_counter()
-            cache_opt.solve(cache_model, logfile=iteration_path.joinpath(f'cache_log.log'))
+            cache_solve_result = cache_opt.solve(
+                cache_model,
+                logfile=iteration_path.joinpath('cache_log.log'),
+                tee=True)
             end = time.perf_counter()
             total_time_elapsed += end - start
             print(f'done ({end - start:.04}s)', end='')
@@ -328,6 +334,9 @@ def solve_instance(
                 print(' [TIME LIMIT]')
             else:
                 print('')
+            if not has_usable_solution(cache_solve_result):
+                print(f'[iter {iteration_index}] [CACHE] ERROR: solver returned no usable solution ({describe_solver_result(cache_solve_result)})')
+                return 3
 
             matching = get_result_from_cache_model(cache_model)
             cache_final_result = exhume_result_from_matching(matching, output_path)
@@ -445,7 +454,10 @@ def solve_instance(
                 # Risoluzione del modello MILP del giorno corrente
                 print('Start solving...', end='')
                 start = time.perf_counter()
-                subproblem_opt.solve(subproblem_model, logfile=iteration_path.joinpath(f'subproblem_day_{day_name}_log.log'))
+                subproblem_solve_result = subproblem_opt.solve(
+                    subproblem_model,
+                    logfile=iteration_path.joinpath(f'subproblem_day_{day_name}_log.log'),
+                    tee=True)
                 end = time.perf_counter()
                 total_time_elapsed += end - start
                 print(f'done ({end - start:.04}s)', end='')
@@ -453,6 +465,11 @@ def solve_instance(
                     print(' [TIME LIMIT]')
                 else:
                     print('')
+                if not has_usable_solution(subproblem_solve_result):
+                    print(
+                        f'[iter {iteration_index}] [SUB] ERROR: day {day_name} has no usable solution '
+                        f'({describe_solver_result(subproblem_solve_result)})')
+                    return 5
 
                 if config['structure_type'] in ['slim-fat', 'fat-fat']:
                     subproblem_result = get_result_from_fat_subproblem_model(subproblem_model)
@@ -827,9 +844,7 @@ for config_name, config_diff_from_base in config['groups'].items():
 
     # Creazione della configurazione del gruppo corrente, sovrascrivendo alcuni
     # parametri
-    group_config = copy.deepcopy(base_config)
-    for key, value in config_diff_from_base.items():
-        group_config[key] = value
+    group_config = merge_group_config(base_config, config_diff_from_base)
     
     # Controllo se la configurazione deve essere esclusa dall'analisi
     if not is_combination_to_do(config_name, None, None, group_config):

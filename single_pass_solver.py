@@ -3,7 +3,6 @@ from pathlib import Path
 import logging
 import json
 import yaml
-import copy
 import time
 
 # Soppressione dell'output a terminale degli avvertimenti di Pyomo
@@ -12,8 +11,9 @@ logging.getLogger('pyomo.core').setLevel(logging.ERROR)
 from src.common.custom_types import MasterInstance, SlimMasterResult
 from src.common.custom_types import FatSubproblemResult, SlimSubproblemResult, FinalResult
 from src.common.custom_types import FatMasterResult, FatSubproblemInstance, SlimSubproblemInstance
+from src.common.config_merge import merge_group_config
 from src.common.tools import is_combination_to_do
-from src.common.solver_factory import get_solver_name, build_solver
+from src.common.solver_factory import get_solver_name, build_solver, has_usable_solution, describe_solver_result
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result, decode_subproblem_instance
 from src.common.file_load_and_dump import encode_final_result
@@ -59,9 +59,7 @@ def get_preliminary_solving_info(
 
         # Creazione della configurazione del gruppo corrente, sovrascrivendo
         # alcuni parametri
-        group_config = copy.deepcopy(base_config)
-        for key, value in config_diff_from_base.items():
-            group_config[key] = value
+        group_config = merge_group_config(base_config, config_diff_from_base)
 
         # Controllo se la configurazione deve essere esclusa dalla risoluzione
         if not is_combination_to_do(config_name, None, None, group_config):
@@ -187,13 +185,19 @@ def solve_instance(
     # Risoluzione del problema
     print(f'Start solving...', end='')
     start = time.perf_counter()
-    opt.solve(model, logfile=output_path.joinpath('solver_log.log')) # type: ignore
+    solve_result = opt.solve(
+        model,
+        logfile=output_path.joinpath('solver_log.log'),
+        tee=True) # type: ignore
     end = time.perf_counter()
     print(f'done ({end - start:.04}s)', end='')
     if end - start >= config['solver']['time_limit']:
         print(' [TIME LIMIT]')
     else:
         print('')
+    if not has_usable_solution(solve_result):
+        print(f'ERROR: solver returned no usable solution ({describe_solver_result(solve_result)})')
+        return 3
 
     # Ottenimento dei risultati
     if config['problem_type'] == 'monolithic':
@@ -266,9 +270,7 @@ for config_name, config_diff_from_base in config['groups'].items():
 
     # Creazione della configurazione del gruppo corrente, sovrascrivendo alcuni
     # parametri
-    group_config = copy.deepcopy(base_config)
-    for key, value in config_diff_from_base.items():
-        group_config[key] = value
+    group_config = merge_group_config(base_config, config_diff_from_base)
     
     # Controllo se la configurazione deve essere esclusa dall'analisi
     if not is_combination_to_do(config_name, None, None, group_config):

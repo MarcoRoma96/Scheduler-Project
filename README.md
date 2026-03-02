@@ -82,11 +82,30 @@ python plotter.py all -c configs/plotter_config.yaml -i results
 python plotter.py instance -i results/<config>__<group>__<inst> -o debug_plots --iter 1
 ```
 
+### 2.6 Avvio GUI control panel
+
+E' disponibile una GUI desktop per gestire configurazioni, lanciare script e navigare i risultati:
+
+```bash
+python control_panel.py
+```
+
+Funzionalita principali:
+
+- pagina `Generator`: preset master/subproblem, editor config, run con output live
+- pagina `Solving`: pannelli separati per `solver.py` e `single_pass_solver.py`
+- pagina `Analysis / Plot`:
+  - run `analyzer.py`
+  - run `plotter.py` (`all` e `instance`)
+  - browser risultati con filtri `config/group/instance` e apertura file (`xlsx/png/json/log`)
+- terminale integrato con status bar e stop del processo
+
 ## 3) Struttura del progetto
 
 ```text
 .
 ├── generator.py
+├── control_panel.py
 ├── solver.py
 ├── single_pass_solver.py
 ├── analyzer.py
