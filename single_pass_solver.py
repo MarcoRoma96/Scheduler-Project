@@ -129,7 +129,8 @@ def solve_instance(
         instance: MasterInstance | FatSubproblemInstance | SlimSubproblemInstance,
         config,
         output_path: Path,
-        summary_lines: list[str]) -> int:
+        summary_lines: list[str],
+        verbose: bool = False) -> int:
     '''Funzione che risolve un'istanza con la configurazione fornita.'''
 
     print('********************************************************************************')
@@ -185,10 +186,10 @@ def solve_instance(
     # Risoluzione del problema
     print(f'Start solving...', end='')
     start = time.perf_counter()
-    solve_result = opt.solve(
-        model,
-        logfile=output_path.joinpath('solver_log.log'),
-        tee=True) # type: ignore
+    solve_kwargs = {'logfile': output_path.joinpath('solver_log.log')}
+    if verbose:
+        solve_kwargs['tee'] = True
+    solve_result = opt.solve(model, **solve_kwargs) # type: ignore
     end = time.perf_counter()
     print(f'done ({end - start:.04}s)', end='')
     if end - start >= config['solver']['time_limit']:
@@ -246,12 +247,17 @@ parser.add_argument('-c', '--config', help='Location of the solving configuratio
 parser.add_argument('-i', '--input', help='Location of instance groups', type=Path, required=True)
 parser.add_argument('-o', '--output', help='Where the output will be written', type=Path, required=True)
 parser.add_argument('--overwrite', help='If output can overwrite previous files', action='store_true')
+parser.add_argument(
+    '--verbose',
+    help='Stream the underlying solver output (GLPK/Gurobi) live to stdout.',
+    action='store_true')
 args = parser.parse_args()
 
 config_path = Path(args.config).resolve()
 input_path = Path(args.input).resolve()
 output_path = Path(args.output).resolve()
 can_overwrite = bool(args.overwrite)
+verbose = bool(args.verbose)
 
 output_path.mkdir(exist_ok=True)
 
@@ -328,7 +334,12 @@ for config_name, config_diff_from_base in config['groups'].items():
 
             try:
                 # Risoluzione dell'istanza corrente
-                error_code = solve_instance(instance, group_config, solving_path, summary_lines)
+                error_code = solve_instance(
+                    instance,
+                    group_config,
+                    solving_path,
+                    summary_lines,
+                    verbose=verbose)
                 if error_code != 0:
                     print(f'Error code: {error_code}')
             except Exception as e:

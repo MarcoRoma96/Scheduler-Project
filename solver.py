@@ -171,7 +171,8 @@ def solve_instance(
         master_instance: MasterInstance,
         config,
         output_path: Path,
-        iteration_summary_lines: list[str]) -> int:
+        iteration_summary_lines: list[str],
+        verbose: bool = False) -> int:
     '''Funzione che esegue il ciclo di iterazioni necessario per risolvere una
     istanza del problema master con la configurazione fornita.'''
     
@@ -269,9 +270,9 @@ def solve_instance(
         # Risoluzione del problema master
         print(f'[iter {iteration_index}] [MASTER] Starting master solving...', end='')
         start = time.perf_counter()
-        solve_kwargs = {
-            'logfile': iteration_path.joinpath('master_log.log'),
-            'tee': True}
+        solve_kwargs = {'logfile': iteration_path.joinpath('master_log.log')}
+        if verbose:
+            solve_kwargs['tee'] = True
         if solver_name == 'gurobi':
             solve_kwargs['warmstart'] = True
         master_solve_result = master_opt.solve(master_model, **solve_kwargs)
@@ -323,10 +324,10 @@ def solve_instance(
             # Risoluzione del modello MILP della cache
             print(f'Start solving...', end='')
             start = time.perf_counter()
-            cache_solve_result = cache_opt.solve(
-                cache_model,
-                logfile=iteration_path.joinpath('cache_log.log'),
-                tee=True)
+            cache_solve_kwargs = {'logfile': iteration_path.joinpath('cache_log.log')}
+            if verbose:
+                cache_solve_kwargs['tee'] = True
+            cache_solve_result = cache_opt.solve(cache_model, **cache_solve_kwargs)
             end = time.perf_counter()
             total_time_elapsed += end - start
             print(f'done ({end - start:.04}s)', end='')
@@ -454,10 +455,13 @@ def solve_instance(
                 # Risoluzione del modello MILP del giorno corrente
                 print('Start solving...', end='')
                 start = time.perf_counter()
+                subproblem_solve_kwargs = {
+                    'logfile': iteration_path.joinpath(f'subproblem_day_{day_name}_log.log')}
+                if verbose:
+                    subproblem_solve_kwargs['tee'] = True
                 subproblem_solve_result = subproblem_opt.solve(
                     subproblem_model,
-                    logfile=iteration_path.joinpath(f'subproblem_day_{day_name}_log.log'),
-                    tee=True)
+                    **subproblem_solve_kwargs)
                 end = time.perf_counter()
                 total_time_elapsed += end - start
                 print(f'done ({end - start:.04}s)', end='')
@@ -820,12 +824,17 @@ parser.add_argument('-c', '--config', help='Location of the solving configuratio
 parser.add_argument('-i', '--input', help='Location of master instance groups', type=Path, required=True)
 parser.add_argument('-o', '--output', help='Where the output will be written', type=Path, required=True)
 parser.add_argument('--overwrite', help='If output can overwrite previous files', action='store_true')
+parser.add_argument(
+    '--verbose',
+    help='Stream the underlying solver output (GLPK/Gurobi) live to stdout.',
+    action='store_true')
 args = parser.parse_args()
 
 config_path = Path(args.config).resolve()
 input_path = Path(args.input).resolve()
 output_path = Path(args.output).resolve()
 can_overwrite = bool(args.overwrite)
+verbose = bool(args.verbose)
 
 output_path.mkdir(exist_ok=True)
 
@@ -898,7 +907,12 @@ for config_name, config_diff_from_base in config['groups'].items():
             ]
 
             # Risoluzione dell'istanza corrente
-            error_code = solve_instance(master_instance, group_config, solving_path, iteration_summary_lines)
+            error_code = solve_instance(
+                master_instance,
+                group_config,
+                solving_path,
+                iteration_summary_lines,
+                verbose=verbose)
             if error_code != 0:
                 print(f'Error code: {error_code}')
 

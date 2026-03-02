@@ -1071,6 +1071,7 @@ class SolverRunPanel(ttk.Frame):
         self.available_instance_var = tk.StringVar(value="")
         self.input_index_summary_var = tk.StringVar(value="-")
         self.overwrite_var = tk.BooleanVar(value=False)
+        self.verbose_var = tk.BooleanVar(value=False)
         self.available_inputs: dict[str, list[str]] = {}
         self._input_scan_after_id: str | None = None
 
@@ -1115,7 +1116,9 @@ class SolverRunPanel(ttk.Frame):
         ttk.Label(controls, text="([all] = tutti)").grid(row=5, column=2, sticky="w", padx=6, pady=4)
 
         ttk.Checkbutton(controls, text="Overwrite existing output", variable=self.overwrite_var).grid(
-            row=6, column=0, columnspan=2, sticky="w", padx=8, pady=6)
+            row=6, column=0, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(controls, text="Verbose solver output", variable=self.verbose_var).grid(
+            row=6, column=1, sticky="w", padx=8, pady=6)
 
         actions = ttk.Frame(controls)
         actions.grid(row=6, column=2, sticky="e", padx=8, pady=6)
@@ -1222,6 +1225,8 @@ class SolverRunPanel(ttk.Frame):
             "-o", str(output_dir)]
         if self.overwrite_var.get():
             cmd.append("--overwrite")
+        if self.verbose_var.get():
+            cmd.append("--verbose")
         self.app.start_command(cmd)
 
 
