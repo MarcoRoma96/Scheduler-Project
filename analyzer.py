@@ -47,6 +47,12 @@ input_path = Path(args.input).resolve()
 with open(config_path, 'r') as file:
     config = yaml.load(file, yaml.CLoader)
 
+# Backward-compatible defaults for older analyzer configs that only specify
+# the *_to_do / *_to_avoid filters.
+config.setdefault('do_instance_analysis', True)
+config.setdefault('do_master_result_analysis', True)
+config.setdefault('do_subproblem_result_analysis', True)
+
 # Elenco dei dati da trasformare in DataFrame per ogni istanza di input,
 # risultato delle iterazioni e risultato dei sottoproblemi
 instance_data: list[dict[str, str | int | float]] = []

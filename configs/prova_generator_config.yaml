@@ -1,10 +1,15 @@
 groups:
   prova_small_5pat_4cu_2op:
     instance_number: 2
-    patient_number: 5
+    patient_number: 15
     care_unit_number: 4
     operator_number: 2
-
+    day_number: 10
+    operator_duration: 10
+    service_duration:
+      max: 6
+    request_over_disponibility_ratio: 0.9
+    window_max_size: 3
 base:
   seed: 42
   instance_number: 8

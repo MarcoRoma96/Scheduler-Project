@@ -6,6 +6,7 @@ from src.common.custom_types import MasterInstance, FatMasterResult, SlimMasterR
 from src.common.custom_types import DayName, CareUnitName, FinalResult, SlimSubproblemInstance
 from src.common.custom_types import PatientServiceOperator, TimeSlot, OperatorName
 from src.common.custom_types import FatSubproblemInstance, FatSubproblemResult, SlimSubproblemResult
+from src.plotters.care_unit_colors import get_instance_care_unit_colors
 
 def plot_master_results(
         instance: MasterInstance,
@@ -13,15 +14,7 @@ def plot_master_results(
         save_path: Path,
         title: str):
 
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
-        'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
-
-    care_unit_names = set(care_unit_name
-        for day in instance.days.values()
-        for care_unit_name in day.care_units.keys())
-    
-    care_unit_colors = {care_unit_name: colors[i % len(colors)]
-        for i, care_unit_name in enumerate(care_unit_names)}
+    care_unit_colors = get_instance_care_unit_colors(instance)
     
     care_unit_durations = {(day_name, care_unit_name): sum(o.duration for o in care_unit.values())
         for day_name, day in instance.days.items()
@@ -97,13 +90,7 @@ def plot_subproblem_results(
         save_path: Path,
         title: str):
 
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
-        'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
-
-    care_unit_names = set(instance.day.care_units.keys())
-    
-    care_unit_colors = {care_unit_name: colors[i % len(colors)]
-        for i, care_unit_name in enumerate(care_unit_names)}
+    care_unit_colors = get_instance_care_unit_colors(instance)
 
     row_height = 2.0
     space_between_operators = 1.0

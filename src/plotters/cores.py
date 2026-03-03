@@ -6,6 +6,7 @@ from pathlib import Path
 from src.common.custom_types import FatCore, SlimCore, MasterInstance, OperatorName, TimeSlot
 from src.common.custom_types import PatientServiceOperator, DayName, FatSubproblemResult, SlimSubproblemResult
 from src.common.tools import is_combination_to_do
+from src.plotters.care_unit_colors import get_instance_care_unit_colors
 
 def plot_core_info(master_result_df: pd.DataFrame, results_path: Path, config):
 
@@ -108,15 +109,7 @@ def plot_core_gantt(
         all_subproblem_result: dict[DayName, FatSubproblemResult] | dict[DayName, SlimSubproblemResult],
         title: str):
 
-    colors = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple',
-        'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
-
-    care_unit_names = set()
-    for day in instance.days.values():
-        care_unit_names.update(day.care_units.keys())
-    
-    care_unit_colors = {care_unit_name: colors[i % len(colors)]
-        for i, care_unit_name in enumerate(care_unit_names)}
+    care_unit_colors = get_instance_care_unit_colors(instance)
 
     row_height = 2.0
     space_between_operators = 1.0

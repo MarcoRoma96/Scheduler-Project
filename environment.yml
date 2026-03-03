@@ -1,0 +1,7 @@
+name: opt312
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - glpk
+prefix: /home/marco/miniconda3/envs/opt312

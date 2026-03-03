@@ -1,8 +1,9 @@
-from argparse import ArgumentParser
+from argparse import ArgumentParser, RawTextHelpFormatter
 from pathlib import Path
 import yaml
 import json
 import pandas as pd
+from textwrap import dedent
 
 from src.common.custom_types import SlimSubproblemResult, DayName, FatSubproblemResult
 from src.common.file_load_and_dump import decode_master_instance, decode_final_result, decode_master_result
@@ -65,17 +66,123 @@ def plot_instance(input_path: Path, output_path: Path, iteration_index: int):
             output_path.joinpath(f'subproblem_day_{day_name}.png'), 
             f'Day {day_name} of iteration {iteration_index} of \'{input_path.name}\'')
 
-parser = ArgumentParser(prog='Plotter')
-sub_parsers = parser.add_subparsers(dest='command')
+parser = ArgumentParser(
+    prog='plotter.py',
+    formatter_class=RawTextHelpFormatter,
+    description=dedent(
+        """\
+        Generate plots from solver results.
 
-parser_all = sub_parsers.add_parser('all')
-parser_all.add_argument('-c', '--config', help='Location of the plotter configuration', type=Path, required=True)
-parser_all.add_argument('-i', '--input', help='Location of the results', type=Path, required=True)
+        Modes:
+          all       Batch plotting over a results root using a plotter YAML config.
+          instance  Detailed plotting for a single solved instance and one iteration.
 
-parser_single = sub_parsers.add_parser('instance')
-parser_single.add_argument('-i', '--input', help='Location of the result', type=Path, required=True)
-parser_single.add_argument('-o', '--output', help='Where to save the plots', type=Path, required=True)
-parser_single.add_argument('--iter', help='Iteration index', type=int, required=True)
+        Notes:
+          - Batch analytical plots require analyzer outputs in <results>/analysis/.
+          - Structural plots (best_instance, core_gantt, instance mode) read raw JSON results.
+        """),
+    epilog=dedent(
+        """\
+        Examples:
+          python plotter.py all -c configs/plotter_config.yaml -i results
+          python plotter.py all -c configs/plotter_config.yaml -i prova_results
+          python plotter.py instance -i results/test__group__inst_00 -o plots_single --iter 3
+
+        Batch plots currently recognized in plots_to_do:
+          best_instance
+          best_instance_subproblems
+          core_gantt
+          result_value_vs_time
+          core_info
+          solving_times
+          solving_times_by_day
+          requests_per_patient
+          equal_requests_between_iterations
+          aggregate_best_solution_value  (currently incomplete)
+        """))
+sub_parsers = parser.add_subparsers(dest='command', metavar='{all,instance}')
+sub_parsers.required = True
+
+parser_all = sub_parsers.add_parser(
+    'all',
+    formatter_class=RawTextHelpFormatter,
+    help='Generate all requested batch plots for a results root.',
+    description=dedent(
+        """\
+        Generate batch plots under each result directory selected by the YAML config.
+
+        Expected input layout:
+          <results_root>/
+            analysis/
+              instance_analysis.xlsx
+              master_result_analysis.xlsx
+              subproblem_result_analysis.xlsx
+            <config>__<group>__<instance>/
+              master_instance.json
+              best_final_result_so_far.json
+              iter_1/
+              ...
+
+        The exact plots produced depend on plots_to_do in the config file.
+        """),
+    epilog=dedent(
+        """\
+        Example:
+          python plotter.py all -c configs/plotter_config.yaml -i results
+        """))
+parser_all.add_argument(
+    '-c', '--config',
+    help='Path to the plotter YAML config (filters + plots_to_do).',
+    type=Path,
+    required=True)
+parser_all.add_argument(
+    '-i', '--input',
+    help='Root directory containing solver results, e.g. results/ or prova_results/.',
+    type=Path,
+    required=True)
+
+parser_single = sub_parsers.add_parser(
+    'instance',
+    formatter_class=RawTextHelpFormatter,
+    help='Generate detailed plots for one solved instance and one iteration.',
+    description=dedent(
+        """\
+        Generate detailed plots for a single solved instance directory.
+
+        Expected input layout:
+          <result_dir>/
+            master_instance.json
+            iter_<k>/
+              master_result.json
+              final_result.json
+              subproblem_day_<d>_instance.json
+              subproblem_day_<d>_result.json
+
+        Output files:
+          master_result.png
+          final_result.png
+          subproblem_day_<d>.png
+        """),
+    epilog=dedent(
+        """\
+        Example:
+          python plotter.py instance -i results/test__group__inst_00 -o plots_single --iter 3
+        """))
+parser_single.add_argument(
+    '-i', '--input',
+    help='Path to one result directory <config>__<group>__<instance>.',
+    type=Path,
+    required=True)
+parser_single.add_argument(
+    '-o', '--output',
+    help='Directory where the generated PNG files will be written.',
+    type=Path,
+    required=True)
+parser_single.add_argument(
+    '--iter',
+    help='Iteration index to visualize, e.g. 1, 2, 3...',
+    type=int,
+    required=True)
 
 args = parser.parse_args()
 

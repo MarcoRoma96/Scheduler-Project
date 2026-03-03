@@ -21,7 +21,7 @@ def analyze_master_instance(instance: MasterInstance) -> dict[str, int | float]:
     patient_number = len(instance.patients)
     patient_request_numbers = [sum(len(windows) for windows in patient.requests.items()) for patient in instance.patients.values()]
 
-    windows_overapping_per_patient: list[int] = []
+    windows_overlapping_per_patient: list[int] = []
     day_number_used_per_patient: list[int] = []
 
     for patient in instance.patients.values():
@@ -36,9 +36,9 @@ def analyze_master_instance(instance: MasterInstance) -> dict[str, int | float]:
                 if window.overlaps(patient_windows[j]):
                     overlapping_windows += 1
         
-        windows_overapping_per_patient.append(overlapping_windows)
+        windows_overlapping_per_patient.append(overlapping_windows)
     
-    total_overlapping_windows = sum(windows_overapping_per_patient)
+    total_overlapping_windows = sum(windows_overlapping_per_patient)
 
     return {
         'day_number': day_number,
@@ -73,9 +73,9 @@ def analyze_master_instance(instance: MasterInstance) -> dict[str, int | float]:
         'average_patient_request_number': sum(patient_request_numbers) / patient_number,
         
         'total_overlapping_windows': total_overlapping_windows,
-        'min_windows_overapping_per_patient': min(windows_overapping_per_patient),
-        'max_windows_overapping_per_patient': max(windows_overapping_per_patient),
-        'average_windows_overapping_per_patient': total_overlapping_windows / patient_number,
+        'min_windows_overlapping_per_patient': min(windows_overlapping_per_patient),
+        'max_windows_overlapping_per_patient': max(windows_overlapping_per_patient),
+        'average_windows_overlapping_per_patient': total_overlapping_windows / patient_number,
         
         'min_day_number_used_per_patient': min(day_number_used_per_patient),
         'max_day_number_used_per_patient': max(day_number_used_per_patient),
