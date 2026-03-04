@@ -75,6 +75,10 @@ base:
     master:
         time_limit: 600 # in secondi
         memory_limit: 16 # in GB
+        threads: 0 # 0 = automatico (default Gurobi)
+        method: auto # auto, primal, dual, barrier, concurrent o intero Gurobi
+        presolve: auto # auto, off, conservative, aggressive o intero Gurobi
+        hard_memory_limit: 0 # in GB; 0 = disabilitato, usa solo SoftMemLimit
         additional_info: [
 
             # Penalizza in funzione obiettivo i pazienti che utilizzano tanti
@@ -93,6 +97,10 @@ base:
     subproblem:
         time_limit: 30 # in secondi
         memory_limit: 16 # in GB
+        threads: 0
+        method: auto
+        presolve: auto
+        hard_memory_limit: 0
         additional_info: [
 
             # Utilizzato solo nella versione 'fat'. La durata totale dei servizi
@@ -115,19 +123,35 @@ base:
     cache:
         time_limit: 60 # in secondi
         memory_limit: 16 # in GB
+        threads: 0
+        method: auto
+        presolve: auto
+        hard_memory_limit: 0
     
     # Informazioni relative al solutore della potatura dei core
     core_pruning:
         time_limit: 30 # in secondi
         memory_limit: 16 # in GB
+        threads: 0
+        method: auto
+        presolve: auto
+        hard_memory_limit: 0
         additional_info: ['use_redundant_operator_cut']
     
     # Informazioni relative al solutore dell'espansione dei core
     core_expansion:
         time_limit: 30 # in secondi
         memory_limit: 16 # in GB
+        threads: 0
+        method: auto
+        presolve: auto
+        hard_memory_limit: 0
 
     # Informazioni relative al solutore delle sussunzioni sui giorni
     subsumption:
         time_limit: 30 # in secondi
         memory_limit: 16 # in GB
+        threads: 0
+        method: auto
+        presolve: auto
+        hard_memory_limit: 0

@@ -4,6 +4,9 @@ from pathlib import Path
 import logging
 import shutil
 import json
+import subprocess
+import sys
+import traceback
 import yaml
 import time
 
@@ -19,6 +22,12 @@ from src.common.tools import is_combination_to_do, get_slim_subproblem_instance_
 from src.common.tools import get_all_possible_fat_master_requests, get_all_possible_slim_master_requests
 from src.common.tools import remove_requests_not_present
 from src.common.config_merge import merge_group_config
+from src.common.isolated_worker import (
+    RUN_STATUS_FILENAME,
+    write_run_status,
+    build_worker_preexec,
+    describe_worker_returncode,
+)
 from src.common.solver_factory import get_solver_name, build_solver, has_usable_solution, describe_solver_result
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result
@@ -54,6 +63,183 @@ from src.analyzers.tools import get_result_value, get_day_number_used_by_patient
 # Questo script può essere chiamato solo direttamente dalla linea di comando
 if __name__ != '__main__':
     exit(0)
+
+
+def _get_iterative_worker_memory_limit(group_config) -> int | float | None:
+    limits: list[float] = []
+    for section_name in ['master', 'subproblem', 'cache', 'core_pruning', 'core_expansion', 'subsumption']:
+        section = group_config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        hard_limit = section.get('hard_memory_limit')
+        if hard_limit is not None and float(hard_limit) > 0:
+            limits.append(float(hard_limit))
+            continue
+        soft_limit = section.get('memory_limit')
+        if soft_limit is not None and float(soft_limit) > 0:
+            limits.append(float(soft_limit))
+    if len(limits) == 0:
+        return None
+    return max(limits)
+
+
+def _build_worker_command(
+        config_path: Path,
+        input_path: Path,
+        output_path: Path,
+        config_name: str,
+        group_name: str,
+        instance_path: Path,
+        solving_path: Path,
+        verbose: bool) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        '-c', str(config_path),
+        '-i', str(input_path),
+        '-o', str(output_path),
+        '--_worker',
+        '--_worker-config-name', config_name,
+        '--_worker-group-name', group_name,
+        '--_worker-instance-path', str(instance_path),
+        '--_worker-output-path', str(solving_path),
+    ]
+    if verbose:
+        cmd.append('--verbose')
+    return cmd
+
+
+def _run_instance_worker(
+        config_path: Path,
+        input_path: Path,
+        output_path: Path,
+        config_name: str,
+        group_name: str,
+        instance_name: str,
+        instance_path: Path,
+        solving_path: Path,
+        group_config,
+        verbose: bool) -> int:
+    worker_command = _build_worker_command(
+        config_path,
+        input_path,
+        output_path,
+        config_name,
+        group_name,
+        instance_path,
+        solving_path,
+        verbose,
+    )
+
+    worker_kwargs: dict = {
+        'cwd': str(Path(__file__).resolve().parent),
+    }
+    preexec_fn = build_worker_preexec(_get_iterative_worker_memory_limit(group_config))
+    if preexec_fn is not None and (sys.platform.startswith('linux') or sys.platform == 'darwin'):
+        worker_kwargs['preexec_fn'] = preexec_fn
+
+    result = subprocess.run(worker_command, **worker_kwargs)
+    if result.returncode == 0:
+        return 0
+
+    message = describe_worker_returncode(result.returncode)
+    if not solving_path.joinpath(RUN_STATUS_FILENAME).exists():
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=message,
+            return_code=result.returncode,
+            stage='worker',
+        )
+
+    print(f'[FAIL] {config_name} / {group_name} / {instance_name}: {message}')
+    return result.returncode
+
+
+def _run_worker_mode(args) -> int:
+    config_path = Path(args.config).resolve()
+    instance_path = Path(args._worker_instance_path).resolve()
+    solving_path = Path(args._worker_output_path).resolve()
+    config_name = str(args._worker_config_name)
+    group_name = str(args._worker_group_name)
+    instance_name = instance_path.stem
+    verbose = bool(args.verbose)
+
+    with open(config_path, 'r') as file:
+        config = yaml.load(file, yaml.CLoader)
+
+    base_config = config['base']
+    group_config = merge_group_config(base_config, config['groups'][config_name])
+
+    solving_path.mkdir(exist_ok=True)
+
+    with open(instance_path, 'r') as file:
+        master_instance = decode_master_instance(json.load(file))
+
+    iteration_summary_lines = [
+        f"Solving instance '{instance_name}' of group '{group_name}' with config '{config_name}'",
+        'Worker mode',
+    ]
+
+    try:
+        error_code = solve_instance(
+            master_instance,
+            group_config,
+            solving_path,
+            iteration_summary_lines,
+            verbose=verbose)
+        if error_code == 0:
+            write_run_status(
+                solving_path,
+                status='success',
+                config_name=config_name,
+                group_name=group_name,
+                instance_name=instance_name,
+                message='Instance solved successfully.',
+                error_code=0,
+                stage='completed',
+            )
+        else:
+            write_run_status(
+                solving_path,
+                status='failed',
+                config_name=config_name,
+                group_name=group_name,
+                instance_name=instance_name,
+                message=f'Solver returned error code {error_code}.',
+                error_code=error_code,
+                stage='solver',
+            )
+        return error_code
+    except MemoryError as exc:
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=f'MemoryError: {exc}',
+            error_code=90,
+            stage='memory',
+        )
+        print(f'ERROR: MemoryError while solving {instance_name}')
+        return 90
+    except Exception as exc:
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=f'{type(exc).__name__}: {exc}',
+            error_code=91,
+            stage='exception',
+        )
+        traceback.print_exc()
+        return 91
 
 
 def get_preliminary_solving_info(
@@ -189,17 +375,20 @@ def solve_instance(
     master_opt = build_solver(
         solver_name,
         config['master']['time_limit'],
-        config['master']['memory_limit'])
+        config['master']['memory_limit'],
+        config['master'])
 
     subproblem_opt = build_solver(
         solver_name,
         config['subproblem']['time_limit'],
-        config['subproblem']['memory_limit'])
+        config['subproblem']['memory_limit'],
+        config['subproblem'])
 
     cache_opt = build_solver(
         solver_name,
         config['cache']['time_limit'],
-        config['cache']['memory_limit'])
+        config['cache']['memory_limit'],
+        config['cache'])
 
     # Copia dell'istanza master nella cartella dei risultati
     with open(output_path.joinpath('master_instance.json'), 'w') as file:
@@ -828,6 +1017,11 @@ parser.add_argument(
     '--verbose',
     help='Stream the underlying solver output (GLPK/Gurobi) live to stdout.',
     action='store_true')
+parser.add_argument('--_worker', action='store_true', help='Internal flag: solve a single instance in an isolated subprocess.')
+parser.add_argument('--_worker-config-name', type=str)
+parser.add_argument('--_worker-group-name', type=str)
+parser.add_argument('--_worker-instance-path', type=Path)
+parser.add_argument('--_worker-output-path', type=Path)
 args = parser.parse_args()
 
 config_path = Path(args.config).resolve()
@@ -838,12 +1032,16 @@ verbose = bool(args.verbose)
 
 output_path.mkdir(exist_ok=True)
 
+if args._worker:
+    exit(_run_worker_mode(args))
+
 # Lettura della configurazione
 with open(config_path, 'r') as file:
     config = yaml.load(file, yaml.CLoader)
 
 infos = get_preliminary_solving_info(config, input_path, can_overwrite)
-total_instance_solved = 0
+total_instance_attempted = 0
+total_instance_succeeded = 0
 total_instances_to_solve = sum(infos.values())
 
 base_config = config['base']
@@ -890,30 +1088,40 @@ for config_name, config_diff_from_base in config['groups'].items():
                 print(f'Directory {solving_path} already exists.')
                 continue
             solving_path.mkdir(exist_ok=True)
-
-            # Lettura dell'istanza master di input
-            with open(input_instance_path, 'r') as file:
-                master_instance = decode_master_instance(json.load(file))
             
             # Aggiornamento dei contatori
             instance_solved_of_this_group += 1
             instance_solved_of_this_config += 1
-            total_instance_solved += 1
+            total_instance_attempted += 1
 
             iteration_summary_lines = [
                 f'Solving instance \'{instance_name}\' of group \'{group_name}\' with config \'{config_name}\'',
                 f'{instance_solved_of_this_group}/{infos[config_name, group_name]} instance of this group, {instance_solved_of_this_config}/{sum(n for cg, n in infos.items() if cg[0] == config_name)} instance of this config',
-                f'{total_instance_solved}/{total_instances_to_solve} instance solving in total'
+                f'{total_instance_attempted}/{total_instances_to_solve} instance solving in total'
             ]
 
-            # Risoluzione dell'istanza corrente
-            error_code = solve_instance(
-                master_instance,
-                group_config,
-                solving_path,
-                iteration_summary_lines,
-                verbose=verbose)
-            if error_code != 0:
-                print(f'Error code: {error_code}')
+            print('********************************************************************************')
+            for line in iteration_summary_lines:
+                print(line)
+            print('Launching isolated worker...')
 
-print(f'End of tests. Solved {total_instance_solved} instances.')
+            # Risoluzione dell'istanza corrente
+            return_code = _run_instance_worker(
+                config_path,
+                input_path,
+                output_path,
+                config_name,
+                group_name,
+                instance_name,
+                input_instance_path,
+                solving_path,
+                group_config,
+                verbose=verbose)
+            if return_code == 0:
+                total_instance_succeeded += 1
+            else:
+                print(f'Error code: {return_code}')
+
+print(
+    f'End of tests. Attempted {total_instance_attempted} instances, '
+    f'solved successfully {total_instance_succeeded}.')

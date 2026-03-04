@@ -36,6 +36,10 @@ base:
     solver:
         time_limit: 600 # in secondi
         memory_limit: 16 # in GB
+        threads: 0 # 0 = automatico (default Gurobi)
+        method: auto # auto, primal, dual, barrier, concurrent o intero Gurobi
+        presolve: auto # auto, off, conservative, aggressive o intero Gurobi
+        hard_memory_limit: 0 # in GB; 0 = disabilitato, usa solo SoftMemLimit
         additional_info: [
 
             # Penalizza in funzione obiettivo i pazienti che utilizzano tanti

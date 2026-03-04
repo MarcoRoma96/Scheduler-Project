@@ -390,6 +390,10 @@ Sezioni annidate:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve master per iterazione |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico/default Gurobi; `1` = single-thread; `N > 1` limita il solver a `N` thread |
+| `method` | `str \| int` | Solo Gurobi. Valori supportati: `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi (`-1`, `0`, `1`, `2`, `3`) |
+| `presolve` | `str \| int` | Solo Gurobi. Valori supportati: `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi (`-1`, `0`, `1`, `2`) |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. Mappa `MemLimit`. Se `> 0` impone un limite hard interno al solver; `0` o valore assente = disabilitato |
 | `additional_info` | `list[str]` | Flag opzionali |
 
 Flag `master.additional_info`:
@@ -403,6 +407,10 @@ Flag `master.additional_info`:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve di ciascun sottoproblema giornaliero |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico; utile ridurlo per contenere RAM sui solve più pesanti |
+| `method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi |
+| `presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. `MemLimit`; `0` = disabilitato |
 | `additional_info` | `list[str]` | Flag opzionali |
 
 Flag `subproblem.additional_info`:
@@ -416,6 +424,10 @@ Flag `subproblem.additional_info`:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve modello cache |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico |
+| `method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi |
+| `presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. `MemLimit`; `0` = disabilitato |
 
 ### `core_pruning`
 
@@ -423,6 +435,10 @@ Flag `subproblem.additional_info`:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve di test soddisfacibilità nel pruning |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico |
+| `method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi |
+| `presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. `MemLimit`; `0` = disabilitato |
 | `additional_info` | `list[str]` | Flag passati al modello subproblem usato nel pruning |
 
 ### `core_expansion`
@@ -431,6 +447,10 @@ Flag `subproblem.additional_info`:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve per matching nell’espansione |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico |
+| `method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi |
+| `presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. `MemLimit`; `0` = disabilitato |
 
 ### `subsumption`
 
@@ -438,6 +458,26 @@ Flag `subproblem.additional_info`:
 |---|---|---|
 | `time_limit` | `int` secondi | Time limit solve per confronto giorni (day expansion) |
 | `memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `threads` | `int` | Solo Gurobi. `0` = automatico |
+| `method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi |
+| `presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi |
+| `hard_memory_limit` | `int \| float` GB | Solo Gurobi. `MemLimit`; `0` = disabilitato |
+
+Note operative sui nuovi campi Gurobi:
+
+- `threads`: ridurre questo valore e' spesso il modo piu' efficace per contenere i picchi RAM. `0` lascia decidere a Gurobi.
+- `method`: nel codice i valori stringa vengono mappati cosi':
+  - `auto -> -1`
+  - `primal -> 0`
+  - `dual -> 1`
+  - `barrier -> 2`
+  - `concurrent -> 3`
+- `presolve`: nel codice i valori stringa vengono mappati cosi':
+  - `auto -> -1`
+  - `off -> 0`
+  - `conservative -> 1`
+  - `aggressive -> 2`
+- `hard_memory_limit`: usa `MemLimit`, diverso da `memory_limit` che usa `SoftMemLimit`. `SoftMemLimit` e' un limite soft del solver; `MemLimit` e' piu' rigido. Su modelli molto grandi, usare entrambi e' spesso preferibile.
 
 ### 5.5 Config single-pass (`configs/single_pass_solver_config.yaml`)
 
@@ -449,6 +489,10 @@ Parametri `base`:
 | `solver_name` | `'gurobi' \| 'glpk'` | Solver MILP usato dal single-pass |
 | `solver.time_limit` | `int` secondi | Time limit solve |
 | `solver.memory_limit` | `int` GB | Gurobi: `SoftMemLimit`, GLPK: `memlim` (in MB) |
+| `solver.threads` | `int` | Solo Gurobi. `0` = automatico/default Gurobi; `1` = single-thread; `N > 1` limita il numero di thread |
+| `solver.method` | `str \| int` | Solo Gurobi. `auto`, `primal`, `dual`, `barrier`, `concurrent`, oppure intero Gurobi (`-1`, `0`, `1`, `2`, `3`) |
+| `solver.presolve` | `str \| int` | Solo Gurobi. `auto`, `off`, `conservative`, `aggressive`, oppure intero Gurobi (`-1`, `0`, `1`, `2`) |
+| `solver.hard_memory_limit` | `int \| float` GB | Solo Gurobi. Mappa `MemLimit`. `0` = disabilitato |
 | `solver.additional_info` | `list[str]` | Flag opzionali modello |
 
 Flag `solver.additional_info`:
@@ -456,6 +500,13 @@ Flag `solver.additional_info`:
 - `minimize_hospital_accesses`
 - `use_redundant_operator_cut`
 - `use_redundant_patient_cut`
+
+Note operative anche per il single-pass:
+
+- `solver.threads: 0` mantiene il comportamento corrente.
+- `solver.method: auto` mantiene il comportamento corrente.
+- `solver.presolve: auto` mantiene il comportamento corrente; impostare `off` o `conservative` puo' ridurre l'aggressivita' del presolve e, in alcuni casi, i picchi di memoria.
+- `solver.hard_memory_limit: 0` mantiene il comportamento corrente; se imposti un valore positivo, Gurobi attiva anche `MemLimit` oltre a `SoftMemLimit`.
 
 ### 5.6 Config analyzer (`configs/analyzer_config.yaml`)
 

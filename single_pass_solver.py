@@ -2,7 +2,6 @@ from argparse import ArgumentParser
 from pathlib import Path
 import logging
 import json
-import resource
 import subprocess
 import sys
 import traceback
@@ -17,6 +16,12 @@ from src.common.custom_types import FatSubproblemResult, SlimSubproblemResult, F
 from src.common.custom_types import FatMasterResult, FatSubproblemInstance, SlimSubproblemInstance
 from src.common.config_merge import merge_group_config
 from src.common.tools import is_combination_to_do
+from src.common.isolated_worker import (
+    RUN_STATUS_FILENAME,
+    write_run_status,
+    build_worker_preexec,
+    describe_worker_returncode,
+)
 from src.common.solver_factory import (
     get_solver_name,
     build_solver,
@@ -45,36 +50,6 @@ from src.milp_models.monolithic_model import get_monolithic_model, get_result_fr
 # Questo script può essere chiamato solo direttamente dalla linea di comando
 if __name__ != '__main__':
     exit(0)
-
-
-RUN_STATUS_FILENAME = 'run_status.json'
-
-
-def write_run_status(
-        output_path: Path,
-        *,
-        status: str,
-        config_name: str,
-        group_name: str,
-        instance_name: str,
-        message: str,
-        error_code: int | None = None,
-        return_code: int | None = None,
-        stage: str | None = None):
-    output_path.mkdir(exist_ok=True)
-    payload = {
-        'status': status,
-        'config': config_name,
-        'group': group_name,
-        'instance': instance_name,
-        'message': message,
-        'error_code': error_code,
-        'return_code': return_code,
-        'stage': stage,
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-    }
-    with open(output_path.joinpath(RUN_STATUS_FILENAME), 'w') as file:
-        json.dump(payload, file, indent=4)
 
 
 def get_preliminary_solving_info(
@@ -183,7 +158,8 @@ def solve_instance(
     opt = build_solver(
         solver_name,
         config['solver']['time_limit'],
-        config['solver']['memory_limit'])
+        config['solver']['memory_limit'],
+        config['solver'])
 
     # Copia dell'istanza nella cartella dei risultati
     with open(output_path.joinpath('instance.json'), 'w') as file:
@@ -316,18 +292,6 @@ def _build_worker_command(
     return cmd
 
 
-def _build_worker_preexec(memory_limit_gb: int | float | None):
-    if memory_limit_gb is None or memory_limit_gb <= 0:
-        return None
-
-    limit_bytes = int(float(memory_limit_gb) * 1024 * 1024 * 1024)
-
-    def _preexec():
-        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
-
-    return _preexec
-
-
 def _run_instance_worker(
         config_path: Path,
         input_path: Path,
@@ -353,7 +317,7 @@ def _run_instance_worker(
     worker_kwargs: dict = {
         'cwd': str(Path(__file__).resolve().parent),
     }
-    preexec_fn = _build_worker_preexec(group_config.get('solver', {}).get('memory_limit'))
+    preexec_fn = build_worker_preexec(group_config.get('solver', {}).get('memory_limit'))
     if preexec_fn is not None and (sys.platform.startswith('linux') or sys.platform == 'darwin'):
         worker_kwargs['preexec_fn'] = preexec_fn
 
@@ -361,9 +325,7 @@ def _run_instance_worker(
     if result.returncode == 0:
         return 0
 
-    message = f'Worker failed with return code {result.returncode}.'
-    if result.returncode < 0:
-        message = f'Worker terminated by signal {-result.returncode}.'
+    message = describe_worker_returncode(result.returncode)
 
     if not solving_path.joinpath(RUN_STATUS_FILENAME).exists():
         write_run_status(

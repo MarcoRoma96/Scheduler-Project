@@ -117,7 +117,8 @@ def expand_cores(
     opt = build_solver(
         solver_name,
         config['core_expansion']['time_limit'],
-        config['core_expansion']['memory_limit'])
+        config['core_expansion']['memory_limit'],
+        config['core_expansion'])
 
     print(f'Expanding {len(cores)} cores')
     for core_index, core in enumerate(cores):
@@ -197,7 +198,8 @@ def get_subsumptions(instance: MasterInstance, config) -> dict[CareUnitName, dic
     opt = build_solver(
         solver_name,
         config['subsumption']['time_limit'],
-        config['subsumption']['memory_limit'])
+        config['subsumption']['memory_limit'],
+        config['subsumption'])
 
     # Generazione della relazione di minore o uguale per ogni unità di cura
     for care_unit_name in care_unit_names:

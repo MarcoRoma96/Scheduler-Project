@@ -130,7 +130,8 @@ def is_instance_fully_satisfiable(
     opt = build_solver(
         solver_name,
         config['core_pruning']['time_limit'],
-        config['core_pruning']['memory_limit'])
+        config['core_pruning']['memory_limit'],
+        config['core_pruning'])
 
     start = time.perf_counter()
     opt.solve(model, logfile=None)
