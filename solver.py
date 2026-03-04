@@ -28,7 +28,13 @@ from src.common.isolated_worker import (
     build_worker_preexec,
     describe_worker_returncode,
 )
-from src.common.solver_factory import get_solver_name, build_solver, has_usable_solution, describe_solver_result
+from src.common.solver_factory import (
+    get_solver_name,
+    build_solver,
+    has_usable_solution,
+    describe_solver_result,
+    load_usable_solution,
+)
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
 from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result
 from src.common.file_load_and_dump import encode_final_result, decode_subproblem_result, encode_cores, encode_cache_matching
@@ -459,7 +465,10 @@ def solve_instance(
         # Risoluzione del problema master
         print(f'[iter {iteration_index}] [MASTER] Starting master solving...', end='')
         start = time.perf_counter()
-        solve_kwargs = {'logfile': iteration_path.joinpath('master_log.log')}
+        solve_kwargs = {
+            'logfile': iteration_path.joinpath('master_log.log'),
+            'load_solutions': False,
+        }
         if verbose:
             solve_kwargs['tee'] = True
         if solver_name == 'gurobi':
@@ -474,6 +483,11 @@ def solve_instance(
             print('')
         if not has_usable_solution(master_solve_result):
             print(f'[iter {iteration_index}] [MASTER] ERROR: solver returned no usable solution ({describe_solver_result(master_solve_result)})')
+            return 7
+        if not load_usable_solution(master_model, master_solve_result):
+            print(
+                f'[iter {iteration_index}] [MASTER] ERROR: solver returned an incumbent but Pyomo could not load it '
+                f'({describe_solver_result(master_solve_result)})')
             return 7
 
         if config['structure_type'] in ['fat-slim', 'fat-fat']:
@@ -513,7 +527,10 @@ def solve_instance(
             # Risoluzione del modello MILP della cache
             print(f'Start solving...', end='')
             start = time.perf_counter()
-            cache_solve_kwargs = {'logfile': iteration_path.joinpath('cache_log.log')}
+            cache_solve_kwargs = {
+                'logfile': iteration_path.joinpath('cache_log.log'),
+                'load_solutions': False,
+            }
             if verbose:
                 cache_solve_kwargs['tee'] = True
             cache_solve_result = cache_opt.solve(cache_model, **cache_solve_kwargs)
@@ -526,6 +543,11 @@ def solve_instance(
                 print('')
             if not has_usable_solution(cache_solve_result):
                 print(f'[iter {iteration_index}] [CACHE] ERROR: solver returned no usable solution ({describe_solver_result(cache_solve_result)})')
+                return 3
+            if not load_usable_solution(cache_model, cache_solve_result):
+                print(
+                    f'[iter {iteration_index}] [CACHE] ERROR: solver returned an incumbent but Pyomo could not load it '
+                    f'({describe_solver_result(cache_solve_result)})')
                 return 3
 
             matching = get_result_from_cache_model(cache_model)
@@ -645,7 +667,9 @@ def solve_instance(
                 print('Start solving...', end='')
                 start = time.perf_counter()
                 subproblem_solve_kwargs = {
-                    'logfile': iteration_path.joinpath(f'subproblem_day_{day_name}_log.log')}
+                    'logfile': iteration_path.joinpath(f'subproblem_day_{day_name}_log.log'),
+                    'load_solutions': False,
+                }
                 if verbose:
                     subproblem_solve_kwargs['tee'] = True
                 subproblem_solve_result = subproblem_opt.solve(
@@ -661,6 +685,11 @@ def solve_instance(
                 if not has_usable_solution(subproblem_solve_result):
                     print(
                         f'[iter {iteration_index}] [SUB] ERROR: day {day_name} has no usable solution '
+                        f'({describe_solver_result(subproblem_solve_result)})')
+                    return 5
+                if not load_usable_solution(subproblem_model, subproblem_solve_result):
+                    print(
+                        f'[iter {iteration_index}] [SUB] ERROR: day {day_name} returned an incumbent but Pyomo could not load it '
                         f'({describe_solver_result(subproblem_solve_result)})')
                     return 5
 
