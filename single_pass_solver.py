@@ -2,6 +2,10 @@ from argparse import ArgumentParser
 from pathlib import Path
 import logging
 import json
+import resource
+import subprocess
+import sys
+import traceback
 import yaml
 import time
 
@@ -13,9 +17,16 @@ from src.common.custom_types import FatSubproblemResult, SlimSubproblemResult, F
 from src.common.custom_types import FatMasterResult, FatSubproblemInstance, SlimSubproblemInstance
 from src.common.config_merge import merge_group_config
 from src.common.tools import is_combination_to_do
-from src.common.solver_factory import get_solver_name, build_solver, has_usable_solution, describe_solver_result
+from src.common.solver_factory import (
+    get_solver_name,
+    build_solver,
+    has_usable_solution,
+    describe_solver_result,
+    load_usable_solution,
+)
 from src.common.file_load_and_dump import decode_master_instance, encode_master_instance, encode_master_result
-from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result, decode_subproblem_instance
+from src.common.file_load_and_dump import decode_subproblem_instance
+from src.common.file_load_and_dump import encode_subproblem_instance, encode_subproblem_result
 from src.common.file_load_and_dump import encode_final_result
 
 from src.checkers.check_master_instance import check_master_instance
@@ -34,6 +45,36 @@ from src.milp_models.monolithic_model import get_monolithic_model, get_result_fr
 # Questo script può essere chiamato solo direttamente dalla linea di comando
 if __name__ != '__main__':
     exit(0)
+
+
+RUN_STATUS_FILENAME = 'run_status.json'
+
+
+def write_run_status(
+        output_path: Path,
+        *,
+        status: str,
+        config_name: str,
+        group_name: str,
+        instance_name: str,
+        message: str,
+        error_code: int | None = None,
+        return_code: int | None = None,
+        stage: str | None = None):
+    output_path.mkdir(exist_ok=True)
+    payload = {
+        'status': status,
+        'config': config_name,
+        'group': group_name,
+        'instance': instance_name,
+        'message': message,
+        'error_code': error_code,
+        'return_code': return_code,
+        'stage': stage,
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    with open(output_path.joinpath(RUN_STATUS_FILENAME), 'w') as file:
+        json.dump(payload, file, indent=4)
 
 
 def get_preliminary_solving_info(
@@ -125,6 +166,7 @@ def get_preliminary_solving_info(
 
     return infos
 
+
 def solve_instance(
         instance: MasterInstance | FatSubproblemInstance | SlimSubproblemInstance,
         config,
@@ -186,7 +228,10 @@ def solve_instance(
     # Risoluzione del problema
     print(f'Start solving...', end='')
     start = time.perf_counter()
-    solve_kwargs = {'logfile': output_path.joinpath('solver_log.log')}
+    solve_kwargs = {
+        'logfile': output_path.joinpath('solver_log.log'),
+        'load_solutions': False,
+    }
     if verbose:
         solve_kwargs['tee'] = True
     solve_result = opt.solve(model, **solve_kwargs) # type: ignore
@@ -198,6 +243,9 @@ def solve_instance(
         print('')
     if not has_usable_solution(solve_result):
         print(f'ERROR: solver returned no usable solution ({describe_solver_result(solve_result)})')
+        return 3
+    if not load_usable_solution(model, solve_result):
+        print(f'ERROR: solver returned an incumbent but Pyomo could not load it ({describe_solver_result(solve_result)})')
         return 3
 
     # Ottenimento dei risultati
@@ -241,6 +289,184 @@ def solve_instance(
 
     return 0
 
+
+def _build_worker_command(
+        config_path: Path,
+        input_path: Path,
+        output_path: Path,
+        config_name: str,
+        group_name: str,
+        instance_path: Path,
+        solving_path: Path,
+        verbose: bool) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        '-c', str(config_path),
+        '-i', str(input_path),
+        '-o', str(output_path),
+        '--_worker',
+        '--_worker-config-name', config_name,
+        '--_worker-group-name', group_name,
+        '--_worker-instance-path', str(instance_path),
+        '--_worker-output-path', str(solving_path),
+    ]
+    if verbose:
+        cmd.append('--verbose')
+    return cmd
+
+
+def _build_worker_preexec(memory_limit_gb: int | float | None):
+    if memory_limit_gb is None or memory_limit_gb <= 0:
+        return None
+
+    limit_bytes = int(float(memory_limit_gb) * 1024 * 1024 * 1024)
+
+    def _preexec():
+        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+    return _preexec
+
+
+def _run_instance_worker(
+        config_path: Path,
+        input_path: Path,
+        output_path: Path,
+        config_name: str,
+        group_name: str,
+        instance_name: str,
+        instance_path: Path,
+        solving_path: Path,
+        group_config,
+        verbose: bool) -> int:
+    worker_command = _build_worker_command(
+        config_path,
+        input_path,
+        output_path,
+        config_name,
+        group_name,
+        instance_path,
+        solving_path,
+        verbose,
+    )
+
+    worker_kwargs: dict = {
+        'cwd': str(Path(__file__).resolve().parent),
+    }
+    preexec_fn = _build_worker_preexec(group_config.get('solver', {}).get('memory_limit'))
+    if preexec_fn is not None and (sys.platform.startswith('linux') or sys.platform == 'darwin'):
+        worker_kwargs['preexec_fn'] = preexec_fn
+
+    result = subprocess.run(worker_command, **worker_kwargs)
+    if result.returncode == 0:
+        return 0
+
+    message = f'Worker failed with return code {result.returncode}.'
+    if result.returncode < 0:
+        message = f'Worker terminated by signal {-result.returncode}.'
+
+    if not solving_path.joinpath(RUN_STATUS_FILENAME).exists():
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=message,
+            return_code=result.returncode,
+            stage='worker',
+        )
+
+    print(f'[FAIL] {config_name} / {group_name} / {instance_name}: {message}')
+    return result.returncode
+
+
+def _run_worker_mode(args) -> int:
+    config_path = Path(args.config).resolve()
+    instance_path = Path(args._worker_instance_path).resolve()
+    solving_path = Path(args._worker_output_path).resolve()
+    config_name = str(args._worker_config_name)
+    group_name = str(args._worker_group_name)
+    instance_name = instance_path.stem
+    verbose = bool(args.verbose)
+
+    with open(config_path, 'r') as file:
+        config = yaml.load(file, yaml.CLoader)
+
+    base_config = config['base']
+    group_config = merge_group_config(base_config, config['groups'][config_name])
+
+    solving_path.mkdir(exist_ok=True)
+
+    with open(instance_path, 'r') as file:
+        if group_config['problem_type'] in ['monolithic', 'fat-master', 'slim-master']:
+            instance = decode_master_instance(json.load(file))
+        else:
+            instance = decode_subproblem_instance(json.load(file))
+
+    summary_lines = [
+        f"Solving instance '{instance_name}' of group '{group_name}' with config '{config_name}'",
+        'Worker mode',
+    ]
+
+    try:
+        error_code = solve_instance(
+            instance,
+            group_config,
+            solving_path,
+            summary_lines,
+            verbose=verbose)
+        if error_code == 0:
+            write_run_status(
+                solving_path,
+                status='success',
+                config_name=config_name,
+                group_name=group_name,
+                instance_name=instance_name,
+                message='Instance solved successfully.',
+                error_code=0,
+                stage='completed',
+            )
+        else:
+            write_run_status(
+                solving_path,
+                status='failed',
+                config_name=config_name,
+                group_name=group_name,
+                instance_name=instance_name,
+                message=f'Solver returned error code {error_code}.',
+                error_code=error_code,
+                stage='solver',
+            )
+        return error_code
+    except MemoryError as exc:
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=f'MemoryError: {exc}',
+            error_code=90,
+            stage='memory',
+        )
+        print(f'ERROR: MemoryError while solving {instance_name}')
+        return 90
+    except Exception as exc:
+        write_run_status(
+            solving_path,
+            status='failed',
+            config_name=config_name,
+            group_name=group_name,
+            instance_name=instance_name,
+            message=f'{type(exc).__name__}: {exc}',
+            error_code=91,
+            stage='exception',
+        )
+        traceback.print_exc()
+        return 91
+
+
 # Definizione dei parametri a linea di comando
 parser = ArgumentParser(prog='Iterative instance solver')
 parser.add_argument('-c', '--config', help='Location of the solving configuration', type=Path, required=True)
@@ -251,6 +477,11 @@ parser.add_argument(
     '--verbose',
     help='Stream the underlying solver output (GLPK/Gurobi) live to stdout.',
     action='store_true')
+parser.add_argument('--_worker', action='store_true', help='Internal flag: solve a single instance in an isolated subprocess.')
+parser.add_argument('--_worker-config-name', type=str)
+parser.add_argument('--_worker-group-name', type=str)
+parser.add_argument('--_worker-instance-path', type=Path)
+parser.add_argument('--_worker-output-path', type=Path)
 args = parser.parse_args()
 
 config_path = Path(args.config).resolve()
@@ -261,12 +492,16 @@ verbose = bool(args.verbose)
 
 output_path.mkdir(exist_ok=True)
 
+if args._worker:
+    exit(_run_worker_mode(args))
+
 # Lettura della configurazione
 with open(config_path, 'r') as file:
     config = yaml.load(file, yaml.CLoader)
 
 infos = get_preliminary_solving_info(config, input_path, can_overwrite)
-total_instance_solved = 0
+total_instance_attempted = 0
+total_instance_succeeded = 0
 total_instances_to_solve = sum(infos.values())
 
 base_config = config['base']
@@ -314,35 +549,35 @@ for config_name, config_diff_from_base in config['groups'].items():
                 continue
             solving_path.mkdir(exist_ok=True)
 
-            # Lettura dell'istanza di input
-            with open(input_instance_path, 'r') as file:
-                if group_config['problem_type'] == 'monolithic' or group_config['problem_type'] == 'fat-master' or group_config['problem_type'] == 'slim-master':
-                    instance = decode_master_instance(json.load(file))
-                else:
-                    instance = decode_subproblem_instance(json.load(file))
-            
             # Aggiornamento dei contatori
             instance_solved_of_this_group += 1
             instance_solved_of_this_config += 1
-            total_instance_solved += 1
+            total_instance_attempted += 1
 
-            summary_lines = [
-                f'Solving instance \'{instance_name}\' of group \'{group_name}\' with config \'{config_name}\'',
-                f'{instance_solved_of_this_group}/{infos[config_name, group_name]} instance of this group, {instance_solved_of_this_config}/{sum(n for cg, n in infos.items() if cg[0] == config_name)} instance of this config',
-                f'{total_instance_solved}/{total_instances_to_solve} instance solving in total'
-            ]
+            print('********************************************************************************')
+            print(f"Solving instance '{instance_name}' of group '{group_name}' with config '{config_name}'")
+            print(f'{instance_solved_of_this_group}/{infos[config_name, group_name]} instance of this group, {instance_solved_of_this_config}/{sum(n for cg, n in infos.items() if cg[0] == config_name)} instance of this config')
+            print(f'{total_instance_attempted}/{total_instances_to_solve} instance solving in total')
+            print('Launching isolated worker...')
 
-            try:
-                # Risoluzione dell'istanza corrente
-                error_code = solve_instance(
-                    instance,
-                    group_config,
-                    solving_path,
-                    summary_lines,
-                    verbose=verbose)
-                if error_code != 0:
-                    print(f'Error code: {error_code}')
-            except Exception as e:
-                print(e)
+            return_code = _run_instance_worker(
+                config_path,
+                input_path,
+                output_path,
+                config_name,
+                group_name,
+                instance_name,
+                input_instance_path,
+                solving_path,
+                group_config,
+                verbose,
+            )
+            if return_code != 0:
+                print(f'Error code: {return_code}')
+            else:
+                total_instance_succeeded += 1
+            print('********************************************************************************\n')
 
-print(f'End of tests. Solved {total_instance_solved} instances.')
+print(
+    f'End of tests. Attempted {total_instance_attempted} instances, '
+    f'solved successfully {total_instance_succeeded}.')

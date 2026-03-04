@@ -1,4 +1,5 @@
 import pyomo.environ as pyo
+from pyomo.opt.results import SolverStatus
 
 
 def get_solver_name(config) -> str:
@@ -65,3 +66,26 @@ def has_usable_solution(result) -> bool:
 
 def describe_solver_result(result) -> str:
     return f"status={_status_name(result)}, termination={_termination_name(result)}"
+
+
+def load_usable_solution(model, result) -> bool:
+    """Load a usable incumbent into the model even for non-optimal exits.
+
+    Pyomo refuses to load results with solver.status == error, even when the
+    solver returned an incumbent. When that happens and a solution is present,
+    coerce the status to 'aborted' so the solution can be loaded safely.
+    """
+
+    if not has_usable_solution(result):
+        return False
+
+    try:
+        if (
+            getattr(result.solver, "status", None) == SolverStatus.error
+            and len(result.solution) > 0
+        ):
+            result.solver.status = SolverStatus.aborted
+        model.solutions.load_from(result)
+        return True
+    except Exception:
+        return False

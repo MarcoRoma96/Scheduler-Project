@@ -1,0 +1,27 @@
+# Elenco dei nomi di processi da eseguire e da evitare. Aggiungere 'all' per
+# selezionare tutto.
+configs_to_do: ['all']
+configs_to_avoid: []
+
+# Elenco dei nomi di gruppi di istanze da eseguire e da evitare. Aggiungere
+# 'all' per selezionare tutto.
+groups_to_do: ['all']
+groups_to_avoid: []
+
+# Elenco dei nomi di istanze da eseguire e da evitare. Aggiungere 'all'
+# per selezionare tutto.
+instances_to_do: ['all']
+instances_to_avoid: []
+
+# Elenco dei nomi dei grafici da realizzare per ogni istanza
+plots_to_do: [
+    'best_instance', # computationally heavy!
+    'best_instance_subproblems', # computationally heavy!
+    'core_gantt', # computationally heavy!
+    'result_value_vs_time',
+    'core_info',
+    'solving_times',
+    'solving_times_by_day',
+    'requests_per_patient',
+    'equal_requests_between_iterations'
+]

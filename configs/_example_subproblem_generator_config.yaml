@@ -1,0 +1,38 @@
+# Aggiungere un oggetto per ogni gruppo di istanza da generare. Le proprietà già
+# presenti nel template di base saranno sovrascritte. La chiave dell'oggetto
+# diventerà il nome della cartella del gruppo.
+groups:
+    subproblem_test_group:
+        seed: 42
+
+# Template di base che sarà ripetuto per ognuno dei gruppi: i valori già
+# presenti verranno sovrascritti.
+base:
+
+    # Seme per la generazione pseudocasuale del gruppo
+    seed: 42
+
+    # Numero di istanze nel gruppo
+    instance_number: 8
+
+    # Numero di unità di cura di ogni giorno
+    care_unit_number: 4
+
+    # Numero di operatori in ogni unità di cura
+    operator_number: 2
+
+    # Durata di ogni operatore, in slot temporali
+    operator_duration: 32
+
+    # Numero di servizi da cui le richieste saranno scelte
+    service_number: 32
+
+    # Durata dei servizi, in slot temporali (distribuzione triangolare)
+    service_duration: {min: 2, max: 12, mode: 3}
+
+    # Numero di pazienti in cui suddividere le richieste
+    patient_number: 16
+
+    # Nella versione 'fat' le richieste avranno anche l'operatore da cui essere
+    # svolte
+    type: 'slim' # 'fat', 'slim'
