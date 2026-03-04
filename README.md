@@ -5,9 +5,8 @@ Framework per la generazione di istanze e la risoluzione MILP (Pyomo + Gurobi) d
 1. generazione istanze (`generator.py`)
 2. solving (`solver.py` iterativo con core/caching, oppure `single_pass_solver.py`)
 3. analisi dei risultati (`analyzer.py`)
-4. plotting (`plotter.py`)
-
-Il README è scritto in stile tutorial e reference tecnica.
+4. plotting risultati di solving (`plotter.py`)
+5. plotting strutturale delle istanze master (`master_instance_plotter.py`)
 
 ## 1) Prerequisiti
 
@@ -76,6 +75,12 @@ python analyzer.py -c configs/analyzer_config.yaml -i results
 python plotter.py all -c configs/plotter_config.yaml -i results
 ```
 
+### 2.4-bis Genera grafici strutturali delle istanze master
+
+```bash
+python master_instance_plotter.py -i instances
+```
+
 ### 2.5 Plot di una singola istanza (debug visivo)
 
 ```bash
@@ -110,6 +115,7 @@ Funzionalita principali:
 ├── single_pass_solver.py
 ├── analyzer.py
 ├── plotter.py
+├── master_instance_plotter.py
 ├── configs/
 └── src/
     ├── generators/
@@ -122,7 +128,7 @@ Funzionalita principali:
     └── common/
 ```
 
-## 4) Cosa succede dietro le quinte (flusso tutorial)
+## 4) Flusso di lavoro generale:
 
 ### 4.1 Generazione (`generator.py`)
 
@@ -217,6 +223,80 @@ In pratica il plotter copre due famiglie di grafici:
   - `requests_per_patient`
   - `equal_requests_between_iterations`
   - `aggregate_best_solution_value` (stub/incompleto)
+
+### 4.6 Plotter istanze master (`master_instance_plotter.py`)
+
+- scansiona una root di istanze master (`<input>/<group>/inst_*.json`)
+- crea una cartella `plots_instances/`
+- per ogni istanza genera grafici strutturali direttamente dall'istanza, senza passare dal solver
+- produce anche grafici aggregati che confrontano tutte le istanze di tutti i gruppi
+
+Plot per singola istanza:
+
+- `patient_windows_gantt.png`
+  - asse `x`: giorni
+  - asse `y`: pazienti
+  - ogni blocco rappresenta una finestra di richiesta
+  - larghezza del blocco: `window.end - window.start + 1`
+  - colore del blocco: care unit del servizio associato
+  - se due finestre dello stesso paziente si sovrappongono, vengono impilate su righe distinte sotto lo stesso paziente
+
+- `average_window_overlap_by_day.png`
+  - per ogni giorno `d` e paziente `p`, definisce:
+    - `overlap(p, d) = numero di finestre del paziente p che contengono il giorno d`
+  - per ogni giorno viene mostrato il boxplot dei valori `overlap(p, d)` sui pazienti
+
+- `weighted_window_overlap_by_day.png`
+  - per ogni giorno `d` e paziente `p`, definisce:
+    - `weighted_overlap(p, d) = somma su tutte le finestre w attive in d di 1 / |w|`
+    - con `|w| = w.end - w.start + 1`
+  - interpreta ogni finestra come distribuita uniformemente sulla propria ampiezza
+  - per ogni giorno viene mostrato il boxplot dei valori `weighted_overlap(p, d)` sui pazienti
+
+- `spread_capacity_heatmap.png`
+  - righe: care unit
+  - colonne: giorni
+  - per ogni cella `(cu, d)`:
+    - `spread(cu, d) = somma su tutte le richieste della care unit cu attive in d di duration(service) / |window|`
+    - `capacity(cu, d) = somma delle durate degli operatori della care unit cu nel giorno d`
+    - valore mostrato: `spread(cu, d) / capacity(cu, d)`
+  - se `capacity(cu, d) = 0`, la cella resta vuota/NaN
+
+Plot aggregati su tutte le istanze:
+
+- `instance_daily_median_window_overlap_distribution.png`
+  - per ogni istanza e giorno `d`:
+    - `m(d) = mediana sui pazienti di overlap(p, d)`
+  - il boxplot dell'istanza usa i valori `m(d)` su tutti i giorni
+
+- `instance_daily_weighted_window_overlap_distribution.png`
+  - per ogni istanza e giorno `d`:
+    - `m_w(d) = mediana sui pazienti di weighted_overlap(p, d)`
+  - il boxplot dell'istanza usa i valori `m_w(d)` su tutti i giorni
+
+- `instance_daily_average_spread_capacity_distribution.png`
+  - per ogni istanza e giorno `d`:
+    - `avg_ratio(d) = media sulle care unit dei valori spread(cu, d) / capacity(cu, d)`
+  - il boxplot dell'istanza usa i valori `avg_ratio(d)` su tutti i giorni con valore definito
+
+- `instance_request_count_distribution.png`
+  - per ogni paziente `p` dell'istanza:
+    - `request_count(p) = numero totale di finestre richieste dal paziente`
+  - il boxplot dell'istanza usa i valori `request_count(p)` su tutti i pazienti
+
+- `instance_duration_weighted_request_count_distribution.png`
+  - per ogni paziente `p`:
+    - `weighted_request_count(p) = somma sui servizi richiesti di len(windows(service)) * duration(service)`
+  - il boxplot dell'istanza usa i valori `weighted_request_count(p)` su tutti i pazienti
+
+Nota importante sulle scale:
+
+- il file `master_instance_plotter.py` contiene il flag globale:
+  - `USE_GLOBAL_PLOT_SCALES = True`
+- quando attivo:
+  - i boxplot `average_window_overlap_by_day.png` e `weighted_window_overlap_by_day.png` condividono il limite superiore dell'asse `y`
+  - le `spread_capacity_heatmap.png` condividono la stessa scala colore (`vmax` globale)
+- non vengono invece omologati numero di pazienti, numero di care unit o numero di giorni: questi restano locali all'istanza
 
 ## 5) Parametri configurabili (reference completa)
 
@@ -437,6 +517,23 @@ Modalità `instance`:
   - `subproblem_day_<d>.png`
 - è pensata come modalità di debug visivo puntuale di una specifica iterazione
 
+### 5.8 CLI master instance plotter (`master_instance_plotter.py`)
+
+Non usa un file YAML: la configurazione è via CLI e tramite un flag globale nel codice.
+
+Argomenti:
+
+| Campo | Tipo | Significato |
+|---|---|---|
+| `-i`, `--input` | `Path` | Root delle istanze master (`<root>/<group>/inst_*.json`) |
+| `--skip-existing` | flag | Salta la generazione dei PNG già presenti |
+
+Flag globale nel codice:
+
+| Nome | Tipo | Significato |
+|---|---|---|
+| `USE_GLOBAL_PLOT_SCALES` | `bool` | Condivide alcune scale tra istanze per rendere confrontabili i plot |
+
 ## 6) Output: file e cartelle generate
 
 ### 6.1 Output generatore
@@ -528,6 +625,24 @@ Modalità `instance` scrive invece nella cartella di output specificata:
 ├── master_result.png
 ├── final_result.png
 └── subproblem_day_<d>.png
+```
+
+### 6.6 Output master instance plotter
+
+```text
+<instances_root>/
+└── plots_instances/
+    ├── <group>/
+    │   └── <instance>/
+    │       ├── patient_windows_gantt.png
+    │       ├── average_window_overlap_by_day.png
+    │       ├── weighted_window_overlap_by_day.png
+    │       └── spread_capacity_heatmap.png
+    ├── instance_daily_median_window_overlap_distribution.png
+    ├── instance_daily_weighted_window_overlap_distribution.png
+    ├── instance_daily_average_spread_capacity_distribution.png
+    ├── instance_request_count_distribution.png
+    └── instance_duration_weighted_request_count_distribution.png
 ```
 
 ## 7) KPI estratti dall’analyzer

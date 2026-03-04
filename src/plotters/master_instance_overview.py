@@ -624,3 +624,50 @@ def get_daily_median_window_overlaps(instance: MasterInstance) -> list[float]:
 def get_daily_weighted_median_window_overlaps(instance: MasterInstance) -> list[float]:
     _, per_day_patient_overlaps = get_per_day_patient_weighted_window_overlaps(instance)
     return [float(median(day_overlaps)) for day_overlaps in per_day_patient_overlaps]
+
+
+def get_request_count_per_patient(instance: MasterInstance) -> list[int]:
+    request_counts: list[int] = []
+    for patient in instance.patients.values():
+        request_counts.append(sum(len(windows) for windows in patient.requests.values()))
+    return request_counts
+
+
+def get_duration_weighted_request_count_per_patient(instance: MasterInstance) -> list[int]:
+    weighted_request_counts: list[int] = []
+    for patient in instance.patients.values():
+        weighted_request_counts.append(sum(
+            len(windows) * instance.services[service_name].duration
+            for service_name, windows in patient.requests.items()
+        ))
+    return weighted_request_counts
+
+
+def plot_grouped_instance_request_count_distribution(
+        grouped_instance_request_counts: dict[str, dict[str, list[float]]],
+        save_path: Path,
+        title: str,
+) -> None:
+    _plot_grouped_instance_distribution(
+        grouped_instance_request_counts,
+        save_path,
+        title,
+        ylabel='Requests per patient',
+        box_facecolor='tab:brown',
+        integer_y_ticks=True,
+    )
+
+
+def plot_grouped_instance_duration_weighted_request_count_distribution(
+        grouped_instance_weighted_request_counts: dict[str, dict[str, list[float]]],
+        save_path: Path,
+        title: str,
+) -> None:
+    _plot_grouped_instance_distribution(
+        grouped_instance_weighted_request_counts,
+        save_path,
+        title,
+        ylabel='Duration-weighted requests per patient',
+        box_facecolor='tab:red',
+        integer_y_ticks=True,
+    )

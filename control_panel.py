@@ -15,6 +15,8 @@ from tkinter.scrolledtext import ScrolledText
 
 import yaml
 
+from src.common.plot_catalog import MASTER_INSTANCE_PLOT_NAMES, RESULT_PLOT_NAMES
+
 DELETE_FIELD = object()
 
 
@@ -156,27 +158,27 @@ class ConfigEditor(ttk.LabelFrame):
         except ValueError:
             return str(path)
 
-    def load_file(self):
+    def load_file(self) -> bool:
         path_str = self.path_var.get().strip()
         if not path_str:
             messagebox.showwarning("Missing path", "Choose a YAML configuration file first.")
-            return
+            return False
 
         path = self._resolve_path(path_str)
         if not path.exists():
             messagebox.showerror("File not found", f"Cannot find file:\n{path}")
-            return
+            return False
 
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 loaded = yaml.safe_load(fh) or {}
         except Exception as exc:
             messagebox.showerror("YAML error", f"Failed to parse YAML:\n{exc}")
-            return
+            return False
 
         if not isinstance(loaded, dict):
             messagebox.showerror("Unsupported format", "Top-level YAML content must be a mapping/object.")
-            return
+            return False
 
         self.current_file = path
         self.config_data = loaded
@@ -185,20 +187,21 @@ class ConfigEditor(ttk.LabelFrame):
         self._populate_raw_text()
         self._build_form()
         self.status_cb(f"Loaded config: {path.name}")
+        return True
 
-    def save_file(self):
+    def save_file(self, show_success=True) -> bool:
         path_str = self.path_var.get().strip()
         if not path_str:
             messagebox.showwarning("Missing path", "Choose a YAML configuration file first.")
-            return
+            return False
 
         active_tab = self.notebook.tab(self.notebook.select(), "text")
         if active_tab == "Raw YAML":
             if not self.apply_yaml_text(show_success=False):
-                return
+                return False
         else:
             if not self.apply_form(show_success=False):
-                return
+                return False
 
         path = self._resolve_path(path_str)
         try:
@@ -206,11 +209,13 @@ class ConfigEditor(ttk.LabelFrame):
                 yaml.safe_dump(self.config_data, fh, sort_keys=False, allow_unicode=False)
         except Exception as exc:
             messagebox.showerror("Save error", f"Failed to save file:\n{exc}")
-            return
+            return False
 
         self.current_file = path
         self.status_cb(f"Saved config: {path.name}")
-        messagebox.showinfo("Saved", f"Configuration saved to:\n{path}")
+        if show_success:
+            messagebox.showinfo("Saved", f"Configuration saved to:\n{path}")
+        return True
 
     def _refresh_sections(self):
         sections: list[str] = ["root"]
@@ -1476,6 +1481,308 @@ class ResultsBrowser(ttk.LabelFrame):
         self.app.open_path(path.parent)
 
 
+class PlotSelectionPanel(ttk.LabelFrame):
+    def __init__(self, parent, title: str, plot_names: list[str], on_load, on_apply, columns=2):
+        super().__init__(parent, text=title)
+        self.plot_names = list(plot_names)
+        self.on_load = on_load
+        self.on_apply = on_apply
+        self.columns = max(1, columns)
+        self.plot_vars: dict[str, tk.BooleanVar] = {
+            plot_name: tk.BooleanVar(value=False)
+            for plot_name in self.plot_names
+        }
+
+        self.columnconfigure(0, weight=1)
+
+        actions = ttk.Frame(self)
+        actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Button(actions, text="Load from YAML", command=self.on_load).pack(side="left")
+        ttk.Button(actions, text="Apply to YAML", command=self.on_apply).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Select all", command=self.select_all).pack(side="left", padx=(12, 0))
+        ttk.Button(actions, text="Clear all", command=self.clear_all).pack(side="left", padx=(6, 0))
+
+        grid_frame = ttk.Frame(self)
+        grid_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        for column_index in range(self.columns):
+            grid_frame.columnconfigure(column_index, weight=1)
+
+        for index, plot_name in enumerate(self.plot_names):
+            row_index = index // self.columns
+            column_index = index % self.columns
+            ttk.Checkbutton(
+                grid_frame,
+                text=plot_name,
+                variable=self.plot_vars[plot_name]).grid(
+                    row=row_index,
+                    column=column_index,
+                    sticky="w",
+                    padx=(0, 12),
+                    pady=2)
+
+    def get_selected(self) -> list[str]:
+        return [plot_name for plot_name in self.plot_names if self.plot_vars[plot_name].get()]
+
+    def set_selected(self, selected_plot_names: list[str]):
+        selected = {str(name) for name in selected_plot_names}
+        for plot_name, variable in self.plot_vars.items():
+            variable.set(plot_name in selected)
+
+    def select_all(self):
+        for variable in self.plot_vars.values():
+            variable.set(True)
+
+    def clear_all(self):
+        for variable in self.plot_vars.values():
+            variable.set(False)
+
+
+class PngPreviewWindow(tk.Toplevel):
+    def __init__(self, parent, app, image_path: Path):
+        super().__init__(parent)
+        self.app = app
+        self.image_path = image_path
+        self.image: tk.PhotoImage | None = None
+
+        self.title(f"Plot preview - {image_path.name}")
+        self.minsize(720, 480)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        toolbar = ttk.Frame(self)
+        toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        toolbar.columnconfigure(0, weight=1)
+        ttk.Label(toolbar, text=str(image_path), foreground="#555").grid(row=0, column=0, sticky="w")
+        ttk.Button(toolbar, text="Open externally", command=lambda: self.app.open_path(image_path)).grid(
+            row=0, column=1, padx=(8, 0))
+        ttk.Button(toolbar, text="Refresh", command=self._load_image).grid(row=0, column=2, padx=(6, 0))
+
+        preview_frame = ttk.Frame(self)
+        preview_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(preview_frame, background="#f4f4f4", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        xscroll = ttk.Scrollbar(preview_frame, orient="horizontal", command=self.canvas.xview)
+        xscroll.grid(row=1, column=0, sticky="ew")
+        yscroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.canvas.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(xscrollcommand=xscroll.set, yscrollcommand=yscroll.set)
+
+        self._load_image()
+
+    def _load_image(self):
+        self.canvas.delete("all")
+        self.image = None
+
+        if not self.image_path.exists():
+            self.canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                text=f"File not found:\n{self.image_path}",
+                fill="#333")
+            self.canvas.configure(scrollregion=(0, 0, 640, 240))
+            return
+
+        try:
+            self.image = tk.PhotoImage(file=str(self.image_path))
+        except Exception as exc:
+            self.canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                text=f"Cannot preview PNG internally.\n{exc}\nUse 'Open externally'.",
+                fill="#333")
+            self.canvas.configure(scrollregion=(0, 0, 720, 260))
+            return
+
+        image_width = self.image.width()
+        image_height = self.image.height()
+        self.canvas.create_image(0, 0, anchor="nw", image=self.image)
+        self.canvas.configure(scrollregion=(0, 0, image_width, image_height))
+
+        window_width = min(max(image_width + 40, 760), 1440)
+        window_height = min(max(image_height + 100, 520), 960)
+        self.geometry(f"{window_width}x{window_height}")
+
+
+class InstancePlotsBrowser(ttk.LabelFrame):
+    def __init__(self, parent, app, instances_root_var: tk.StringVar):
+        super().__init__(parent, text="Instance Plot Browser")
+        self.app = app
+        self.instances_root_var = instances_root_var
+        self.scope_var = tk.StringVar(value="Aggregated")
+        self.group_var = tk.StringVar(value="")
+        self.instance_var = tk.StringVar(value="")
+        self.count_var = tk.StringVar(value="0 plots")
+
+        self.group_instances: dict[str, list[str]] = {}
+        self.file_index: dict[str, Path] = {}
+        self.preview_windows: list[PngPreviewWindow] = []
+        self._refresh_after_id: str | None = None
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        controls = ttk.Frame(self)
+        controls.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        for column_index in [1, 3, 5]:
+            controls.columnconfigure(column_index, weight=1)
+
+        ttk.Label(controls, text="Plots root").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.plots_root_entry = ttk.Entry(controls, state="readonly")
+        self.plots_root_entry.grid(row=0, column=1, columnspan=5, sticky="ew")
+
+        ttk.Label(controls, text="Scope").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        self.scope_combo = ttk.Combobox(
+            controls,
+            textvariable=self.scope_var,
+            state="readonly",
+            values=["Aggregated", "Group + instance"])
+        self.scope_combo.grid(row=1, column=1, sticky="ew")
+        self.scope_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_file_list())
+
+        ttk.Label(controls, text="Group").grid(row=1, column=2, sticky="w", padx=(8, 6))
+        self.group_combo = ttk.Combobox(controls, textvariable=self.group_var, state="readonly")
+        self.group_combo.grid(row=1, column=3, sticky="ew")
+        self.group_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_group_change())
+
+        ttk.Label(controls, text="Instance").grid(row=1, column=4, sticky="w", padx=(8, 6))
+        self.instance_combo = ttk.Combobox(controls, textvariable=self.instance_var, state="readonly")
+        self.instance_combo.grid(row=1, column=5, sticky="ew")
+        self.instance_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_file_list())
+
+        actions = ttk.Frame(self)
+        actions.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+        ttk.Button(actions, text="Refresh", command=self.refresh).pack(side="left")
+        ttk.Button(actions, text="Preview selected", command=self.preview_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Open selected", command=self.open_selected).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Open folder", command=self.open_selected_parent).pack(side="left", padx=(6, 0))
+        ttk.Label(actions, textvariable=self.count_var).pack(side="right")
+
+        tree_frame = ttk.Frame(self)
+        tree_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(tree_frame, columns=("file",), show="headings", selectmode="browse")
+        self.tree.heading("file", text="PNG file")
+        self.tree.column("file", anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", lambda _event: self.preview_selected())
+
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=yscroll.set)
+
+        self.instances_root_var.trace_add("write", self._schedule_refresh)
+        self.refresh()
+
+    def _schedule_refresh(self, *_args):
+        if self._refresh_after_id is not None:
+            self.after_cancel(self._refresh_after_id)
+        self._refresh_after_id = self.after(250, self.refresh)
+
+    def _plots_root(self) -> Path:
+        return self.app.resolve_path(self.instances_root_var.get()).joinpath("plots_instances")
+
+    def refresh(self):
+        self._refresh_after_id = None
+        plots_root = self._plots_root()
+        self.plots_root_entry.configure(state="normal")
+        self.plots_root_entry.delete(0, tk.END)
+        self.plots_root_entry.insert(0, str(plots_root))
+        self.plots_root_entry.configure(state="readonly")
+
+        self.group_instances = {}
+        if plots_root.exists():
+            for group_dir in sorted(path for path in plots_root.iterdir() if path.is_dir()):
+                instance_dirs = sorted(path.name for path in group_dir.iterdir() if path.is_dir())
+                if len(instance_dirs) > 0:
+                    self.group_instances[group_dir.name] = instance_dirs
+
+        group_names = list(self.group_instances.keys())
+        self.group_combo["values"] = group_names
+        if self.group_var.get() not in group_names:
+            self.group_var.set(group_names[0] if group_names else "")
+        self._refresh_instance_values()
+        self._refresh_file_list()
+
+    def _refresh_instance_values(self):
+        instance_names = self.group_instances.get(self.group_var.get(), [])
+        self.instance_combo["values"] = instance_names
+        if self.instance_var.get() not in instance_names:
+            self.instance_var.set(instance_names[0] if instance_names else "")
+
+    def _on_group_change(self):
+        self._refresh_instance_values()
+        self._refresh_file_list()
+
+    def _selected_files(self) -> list[Path]:
+        plots_root = self._plots_root()
+        if not plots_root.exists():
+            return []
+
+        if self.scope_var.get() == "Aggregated":
+            self.group_combo.configure(state="disabled")
+            self.instance_combo.configure(state="disabled")
+            return sorted(path for path in plots_root.glob("*.png") if path.is_file())
+
+        self.group_combo.configure(state="readonly")
+        self.instance_combo.configure(state="readonly")
+        group_name = self.group_var.get()
+        instance_name = self.instance_var.get()
+        if group_name == "" or instance_name == "":
+            return []
+
+        instance_dir = plots_root.joinpath(group_name, instance_name)
+        if not instance_dir.exists():
+            return []
+        return sorted(path for path in instance_dir.glob("*.png") if path.is_file())
+
+    def _refresh_file_list(self):
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        self.file_index.clear()
+
+        files = self._selected_files()
+        for index, path in enumerate(files):
+            iid = f"plot_{index}"
+            self.tree.insert("", "end", iid=iid, values=(path.name,))
+            self.file_index[iid] = path
+        self.count_var.set(f"{len(files)} plots")
+
+    def _selected_path(self) -> Path | None:
+        selection = self.tree.selection()
+        if len(selection) == 0:
+            return None
+        return self.file_index.get(selection[0])
+
+    def preview_selected(self):
+        path = self._selected_path()
+        if path is None:
+            messagebox.showwarning("No selection", "Select a PNG file first.")
+            return
+        preview_window = PngPreviewWindow(self, self.app, path)
+        self.preview_windows.append(preview_window)
+
+    def open_selected(self):
+        path = self._selected_path()
+        if path is None:
+            messagebox.showwarning("No selection", "Select a PNG file first.")
+            return
+        self.app.open_path(path)
+
+    def open_selected_parent(self):
+        path = self._selected_path()
+        if path is None:
+            messagebox.showwarning("No selection", "Select a PNG file first.")
+            return
+        self.app.open_path(path.parent)
+
+
 class AnalysisPlotPage(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -1492,18 +1799,31 @@ class AnalysisPlotPage(ttk.Frame):
         tabs.add(analyzer_tab, text="Analyzer")
         self._build_analyzer_tab(analyzer_tab)
 
-        plotter_tab = ttk.Frame(tabs)
-        plotter_tab.columnconfigure(0, weight=1)
-        plotter_tab.rowconfigure(1, weight=1)
-        tabs.add(plotter_tab, text="Plotter")
-        self._build_plotter_tab(plotter_tab)
+        result_plotter_tab = ttk.Frame(tabs)
+        result_plotter_tab.columnconfigure(0, weight=1)
+        result_plotter_tab.rowconfigure(1, weight=1)
+        tabs.add(result_plotter_tab, text="Result plots")
+        self._build_result_plotter_tab(result_plotter_tab)
+
+        instance_plotter_tab = ttk.Frame(tabs)
+        instance_plotter_tab.columnconfigure(0, weight=1)
+        instance_plotter_tab.rowconfigure(1, weight=1)
+        tabs.add(instance_plotter_tab, text="Instance plots")
+        self._build_instance_plotter_tab(instance_plotter_tab)
 
         browser_tab = ttk.Frame(tabs)
         browser_tab.columnconfigure(0, weight=1)
         browser_tab.rowconfigure(0, weight=1)
-        tabs.add(browser_tab, text="Browse results")
+        tabs.add(browser_tab, text="Browse result files")
         self.browser = ResultsBrowser(browser_tab, self.app)
         self.browser.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
+        instance_browser_tab = ttk.Frame(tabs)
+        instance_browser_tab.columnconfigure(0, weight=1)
+        instance_browser_tab.rowconfigure(0, weight=1)
+        tabs.add(instance_browser_tab, text="Browse instance plots")
+        self.instance_plot_browser = InstancePlotsBrowser(instance_browser_tab, self.app, self.master_plot_input_var)
+        self.instance_plot_browser.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
     def _build_analyzer_tab(self, parent):
         controls = ttk.LabelFrame(parent, text="Run Analyzer")
@@ -1536,64 +1856,219 @@ class AnalysisPlotPage(ttk.Frame):
             status_cb=self.app.set_status)
         self.analyzer_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-    def _build_plotter_tab(self, parent):
+    def _read_config_for_selection(self, path_var: tk.StringVar, editor: ConfigEditor) -> dict | None:
+        path = self.app.resolve_path(path_var.get())
+        if editor.current_file == path and isinstance(editor.config_data, dict) and len(editor.config_data) > 0:
+            return dict(editor.config_data)
+
+        if not path.exists():
+            messagebox.showerror("File not found", f"Cannot find config file:\n{path}")
+            return None
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                loaded = yaml.safe_load(fh) or {}
+        except Exception as exc:
+            messagebox.showerror("YAML error", f"Failed to parse YAML:\n{exc}")
+            return None
+
+        if not isinstance(loaded, dict):
+            messagebox.showerror("Unsupported format", "Top-level YAML content must be a mapping/object.")
+            return None
+        return loaded
+
+    def _persist_plot_selection(
+            self,
+            path_var: tk.StringVar,
+            editor: ConfigEditor,
+            selection_panel: PlotSelectionPanel,
+            extra_updates: dict | None = None,
+            status_message: str = "Updated plot configuration.") -> bool:
+        if not editor.save_file(show_success=False):
+            return False
+
+        path = self.app.resolve_path(path_var.get())
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                loaded = yaml.safe_load(fh) or {}
+        except Exception as exc:
+            messagebox.showerror("YAML error", f"Failed to read YAML:\n{exc}")
+            return False
+
+        if not isinstance(loaded, dict):
+            messagebox.showerror("Unsupported format", "Top-level YAML content must be a mapping/object.")
+            return False
+
+        loaded["plots_to_do"] = selection_panel.get_selected()
+        if extra_updates is not None:
+            for key, value in extra_updates.items():
+                loaded[key] = value
+
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(loaded, fh, sort_keys=False, allow_unicode=False)
+        except Exception as exc:
+            messagebox.showerror("Save error", f"Failed to save file:\n{exc}")
+            return False
+
+        editor.load_file()
+        self.app.set_status(status_message)
+        return True
+
+    def _load_result_plot_selection(self):
+        config = self._read_config_for_selection(self.result_plotter_config_var, self.result_plotter_editor)
+        if config is None:
+            return
+        plots_to_do = config.get("plots_to_do", [])
+        self.result_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+
+    def _apply_result_plot_selection(self) -> bool:
+        return self._persist_plot_selection(
+            self.result_plotter_config_var,
+            self.result_plotter_editor,
+            self.result_plot_selection,
+            status_message="Updated result plot selection in YAML.")
+
+    def _load_instance_plot_selection(self):
+        config = self._read_config_for_selection(self.master_plotter_config_var, self.master_plotter_editor)
+        if config is None:
+            return
+        plots_to_do = config.get("plots_to_do", [])
+        self.master_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+        self.master_plot_skip_existing_var.set(bool(config.get("skip_existing", False)))
+        self.master_plot_global_scales_var.set(bool(config.get("use_global_value_scales", True)))
+
+    def _apply_instance_plot_selection(self) -> bool:
+        return self._persist_plot_selection(
+            self.master_plotter_config_var,
+            self.master_plotter_editor,
+            self.master_plot_selection,
+            extra_updates={
+                "skip_existing": self.master_plot_skip_existing_var.get(),
+                "use_global_value_scales": self.master_plot_global_scales_var.get(),
+            },
+            status_message="Updated master-instance plot selection in YAML.")
+
+    def _build_result_plotter_tab(self, parent):
         controls = ttk.LabelFrame(parent, text="Run Plotter")
         controls.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
         controls.columnconfigure(1, weight=1)
 
-        self.plotter_config_var = tk.StringVar(value="configs/plotter_config.yaml")
-        self.plotter_input_var = tk.StringVar(value="results")
+        self.result_plotter_config_var = tk.StringVar(value="configs/plotter_config.yaml")
+        self.result_plotter_input_var = tk.StringVar(value="results")
 
         ttk.Label(controls, text="Config file").grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plotter_config_var).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Entry(controls, textvariable=self.result_plotter_config_var).grid(row=0, column=1, sticky="ew", pady=4)
         ttk.Button(controls, text="Browse", command=lambda: self.app.browse_file(
-            self.plotter_config_var,
+            self.result_plotter_config_var,
             [("YAML files", "*.yaml *.yml"), ("All files", "*.*")])).grid(row=0, column=2, padx=6, pady=4)
 
         ttk.Label(controls, text="Results input").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plotter_input_var).grid(row=1, column=1, sticky="ew", pady=4)
-        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(self.plotter_input_var)).grid(
+        ttk.Entry(controls, textvariable=self.result_plotter_input_var).grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(self.result_plotter_input_var)).grid(
             row=1, column=2, padx=6, pady=4)
 
         all_actions = ttk.Frame(controls)
         all_actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
         ttk.Button(all_actions, text="Run plotter all", command=self._run_plotter_all).pack(side="left")
 
+        self.result_plot_selection = PlotSelectionPanel(
+            controls,
+            title="Batch plots to run",
+            plot_names=RESULT_PLOT_NAMES,
+            on_load=self._load_result_plot_selection,
+            on_apply=self._apply_result_plot_selection,
+            columns=2)
+        self.result_plot_selection.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+
         sep = ttk.Separator(controls, orient="horizontal")
-        sep.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=6)
+        sep.grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=6)
 
         self.plot_instance_input_var = tk.StringVar(value="")
         self.plot_instance_output_var = tk.StringVar(value="plots_single")
         self.plot_instance_iter_var = tk.IntVar(value=1)
 
-        ttk.Label(controls, text="Single result dir").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plot_instance_input_var).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Label(controls, text="Single result dir").grid(row=5, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(controls, textvariable=self.plot_instance_input_var).grid(row=5, column=1, sticky="ew", pady=4)
         ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(
-            self.plot_instance_input_var)).grid(row=4, column=2, padx=6, pady=4)
+            self.plot_instance_input_var)).grid(row=5, column=2, padx=6, pady=4)
 
-        ttk.Label(controls, text="Single output dir").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plot_instance_output_var).grid(row=5, column=1, sticky="ew", pady=4)
+        ttk.Label(controls, text="Single output dir").grid(row=6, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(controls, textvariable=self.plot_instance_output_var).grid(row=6, column=1, sticky="ew", pady=4)
         ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(
-            self.plot_instance_output_var)).grid(row=5, column=2, padx=6, pady=4)
+            self.plot_instance_output_var)).grid(row=6, column=2, padx=6, pady=4)
 
-        ttk.Label(controls, text="Iteration").grid(row=6, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(controls, text="Iteration").grid(row=7, column=0, sticky="w", padx=8, pady=4)
         ttk.Spinbox(
             controls,
             from_=1,
             to=999999,
             textvariable=self.plot_instance_iter_var,
-            width=10).grid(row=6, column=1, sticky="w", pady=4)
+            width=10).grid(row=7, column=1, sticky="w", pady=4)
 
         inst_actions = ttk.Frame(controls)
-        inst_actions.grid(row=6, column=2, sticky="e", padx=8, pady=6)
+        inst_actions.grid(row=7, column=2, sticky="e", padx=8, pady=6)
         ttk.Button(inst_actions, text="Run plotter instance", command=self._run_plotter_instance).pack(side="left")
 
-        self.plotter_editor = ConfigEditor(
+        self.result_plotter_editor = ConfigEditor(
             parent,
             project_root=self.app.project_root,
-            path_var=self.plotter_config_var,
+            path_var=self.result_plotter_config_var,
             status_cb=self.app.set_status)
-        self.plotter_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.result_plotter_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.after(0, self._load_result_plot_selection)
+
+    def _build_instance_plotter_tab(self, parent):
+        controls = ttk.LabelFrame(parent, text="Run Master Instance Plotter")
+        controls.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        controls.columnconfigure(1, weight=1)
+
+        self.master_plotter_config_var = tk.StringVar(value="configs/master_instance_plotter_config.yaml")
+        self.master_plot_input_var = tk.StringVar(value="instances")
+        self.master_plot_skip_existing_var = tk.BooleanVar(value=False)
+        self.master_plot_global_scales_var = tk.BooleanVar(value=True)
+
+        ttk.Label(controls, text="Config file").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(controls, textvariable=self.master_plotter_config_var).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_file(
+            self.master_plotter_config_var,
+            [("YAML files", "*.yaml *.yml"), ("All files", "*.*")])).grid(row=0, column=2, padx=6, pady=4)
+
+        ttk.Label(controls, text="Instances input").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(controls, textvariable=self.master_plot_input_var).grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(self.master_plot_input_var)).grid(
+            row=1, column=2, padx=6, pady=4)
+
+        ttk.Checkbutton(
+            controls,
+            text="Skip existing PNG files",
+            variable=self.master_plot_skip_existing_var).grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(
+            controls,
+            text="Use global comparable value scales",
+            variable=self.master_plot_global_scales_var).grid(row=2, column=1, sticky="w", padx=8, pady=6)
+
+        actions = ttk.Frame(controls)
+        actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
+        ttk.Button(actions, text="Run instance plots", command=self._run_master_instance_plotter).pack(side="left")
+        ttk.Button(actions, text="Open plots root", command=self._open_master_plot_root).pack(side="left", padx=(6, 0))
+
+        self.master_plot_selection = PlotSelectionPanel(
+            controls,
+            title="Instance plot selection",
+            plot_names=MASTER_INSTANCE_PLOT_NAMES,
+            on_load=self._load_instance_plot_selection,
+            on_apply=self._apply_instance_plot_selection,
+            columns=2)
+        self.master_plot_selection.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+
+        self.master_plotter_editor = ConfigEditor(
+            parent,
+            project_root=self.app.project_root,
+            path_var=self.master_plotter_config_var,
+            status_cb=self.app.set_status)
+        self.master_plotter_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.after(0, self._load_instance_plot_selection)
 
     def _run_analyzer(self):
         cmd = [
@@ -1608,12 +2083,14 @@ class AnalysisPlotPage(ttk.Frame):
         self.app.open_path(analysis_dir)
 
     def _run_plotter_all(self):
+        if not self._apply_result_plot_selection():
+            return
         cmd = [
             self.app.runner_python,
             "plotter.py",
             "all",
-            "-c", str(self.app.resolve_path(self.plotter_config_var.get())),
-            "-i", str(self.app.resolve_path(self.plotter_input_var.get()))]
+            "-c", str(self.app.resolve_path(self.result_plotter_config_var.get())),
+            "-i", str(self.app.resolve_path(self.result_plotter_input_var.get()))]
         self.app.start_command(cmd)
 
     def _run_plotter_instance(self):
@@ -1625,6 +2102,20 @@ class AnalysisPlotPage(ttk.Frame):
             "-o", str(self.app.resolve_path(self.plot_instance_output_var.get())),
             "--iter", str(self.plot_instance_iter_var.get())]
         self.app.start_command(cmd)
+
+    def _run_master_instance_plotter(self):
+        if not self._apply_instance_plot_selection():
+            return
+        cmd = [
+            self.app.runner_python,
+            "master_instance_plotter.py",
+            "-c", str(self.app.resolve_path(self.master_plotter_config_var.get())),
+            "-i", str(self.app.resolve_path(self.master_plot_input_var.get()))]
+        self.app.start_command(cmd)
+
+    def _open_master_plot_root(self):
+        plots_root = self.app.resolve_path(self.master_plot_input_var.get()).joinpath("plots_instances")
+        self.app.open_path(plots_root)
 
 
 class ControlPanelApp(tk.Tk):
