@@ -34,7 +34,7 @@ base:
   use_cache_selection_model: false
   max_iteration: 100000000
   total_time_limit: 7200
-  early_stop_optimum_approximation_percentage: 1.0
+  early_stop_optimum_approximation_percentage: 0.0
   master:
     time_limit: 600
     memory_limit: 16

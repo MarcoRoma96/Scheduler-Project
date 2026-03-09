@@ -69,7 +69,7 @@ base:
 
     # Se la soluzione del sottoproblema raggiunge questa percentuale rispetto a
     # quella proposta dal master la risoluzione si ferma
-    early_stop_optimum_approximation_percentage: 1.0
+    early_stop_optimum_approximation_percentage: 0.0
     
     # Informazioni relative al solutore del problema master
     master:

@@ -1856,27 +1856,6 @@ class AnalysisPlotPage(ttk.Frame):
             status_cb=self.app.set_status)
         self.analyzer_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-    def _read_config_for_selection(self, path_var: tk.StringVar, editor: ConfigEditor) -> dict | None:
-        path = self.app.resolve_path(path_var.get())
-        if editor.current_file == path and isinstance(editor.config_data, dict) and len(editor.config_data) > 0:
-            return dict(editor.config_data)
-
-        if not path.exists():
-            messagebox.showerror("File not found", f"Cannot find config file:\n{path}")
-            return None
-
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                loaded = yaml.safe_load(fh) or {}
-        except Exception as exc:
-            messagebox.showerror("YAML error", f"Failed to parse YAML:\n{exc}")
-            return None
-
-        if not isinstance(loaded, dict):
-            messagebox.showerror("Unsupported format", "Top-level YAML content must be a mapping/object.")
-            return None
-        return loaded
-
     def _persist_plot_selection(
             self,
             path_var: tk.StringVar,
@@ -1884,10 +1863,12 @@ class AnalysisPlotPage(ttk.Frame):
             selection_panel: PlotSelectionPanel,
             extra_updates: dict | None = None,
             status_message: str = "Updated plot configuration.") -> bool:
-        if not editor.save_file(show_success=False):
+        target_path = self.app.resolve_path(path_var.get())
+        path = target_path
+        if not path.exists():
+            messagebox.showerror("File not found", f"Cannot find config file:\n{path}")
             return False
 
-        path = self.app.resolve_path(path_var.get())
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 loaded = yaml.safe_load(fh) or {}
@@ -1902,7 +1883,10 @@ class AnalysisPlotPage(ttk.Frame):
         loaded["plots_to_do"] = selection_panel.get_selected()
         if extra_updates is not None:
             for key, value in extra_updates.items():
-                loaded[key] = value
+                if value is DELETE_FIELD:
+                    loaded.pop(key, None)
+                else:
+                    loaded[key] = value
 
         try:
             with open(path, "w", encoding="utf-8") as fh:
@@ -1915,24 +1899,96 @@ class AnalysisPlotPage(ttk.Frame):
         self.app.set_status(status_message)
         return True
 
+    def _collect_result_plot_extra_updates(self) -> dict | None:
+        updates: dict[str, object] = {}
+
+        order_text = self.result_plot_order_var.get().strip()
+        if order_text == "":
+            updates["experiment_group_comparison_config_order"] = DELETE_FIELD
+        else:
+            try:
+                parsed_order = yaml.safe_load(order_text)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Input error",
+                    f"Invalid value for 'experiment_group_comparison_config_order':\n{exc}")
+                return None
+            if not isinstance(parsed_order, list):
+                messagebox.showerror(
+                    "Input error",
+                    "'experiment_group_comparison_config_order' must be a YAML list.")
+                return None
+            updates["experiment_group_comparison_config_order"] = [
+                str(item) for item in parsed_order if str(item).strip() != ""]
+
+        aliases_text = self.result_plot_aliases_text.get("1.0", tk.END).strip()
+        if aliases_text == "":
+            updates["experiment_group_comparison_config_aliases"] = DELETE_FIELD
+        else:
+            try:
+                parsed_aliases = yaml.safe_load(aliases_text)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Input error",
+                    f"Invalid value for 'experiment_group_comparison_config_aliases':\n{exc}")
+                return None
+            if not isinstance(parsed_aliases, dict):
+                messagebox.showerror(
+                    "Input error",
+                    "'experiment_group_comparison_config_aliases' must be a YAML mapping/object.")
+                return None
+            updates["experiment_group_comparison_config_aliases"] = {
+                str(key): str(value) for key, value in parsed_aliases.items()
+            }
+
+        return updates
+
+    def _load_result_plot_extras_from_config(self, config: dict):
+        raw_order = config.get("experiment_group_comparison_config_order")
+        if isinstance(raw_order, list):
+            self.result_plot_order_var.set(dump_inline_yaml(raw_order))
+        else:
+            self.result_plot_order_var.set("")
+
+        self.result_plot_aliases_text.delete("1.0", tk.END)
+        raw_aliases = config.get("experiment_group_comparison_config_aliases")
+        if isinstance(raw_aliases, dict):
+            dumped = yaml.safe_dump(raw_aliases, sort_keys=False, allow_unicode=False).strip()
+            if dumped != "":
+                self.result_plot_aliases_text.insert(tk.END, dumped)
+
     def _load_result_plot_selection(self):
-        config = self._read_config_for_selection(self.result_plotter_config_var, self.result_plotter_editor)
-        if config is None:
+        if not self.result_plotter_editor.load_file():
             return
+        config = self.result_plotter_editor.config_data
         plots_to_do = config.get("plots_to_do", [])
         self.result_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+        self._load_result_plot_extras_from_config(config)
 
     def _apply_result_plot_selection(self) -> bool:
+        target_path = self.app.resolve_path(self.result_plotter_config_var.get())
+        if self.result_plotter_editor.current_file != target_path:
+            if not self.result_plotter_editor.load_file():
+                return False
+            config = self.result_plotter_editor.config_data
+            plots_to_do = config.get("plots_to_do", [])
+            self.result_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+            self._load_result_plot_extras_from_config(config)
+
+        updates = self._collect_result_plot_extra_updates()
+        if updates is None:
+            return False
         return self._persist_plot_selection(
             self.result_plotter_config_var,
             self.result_plotter_editor,
             self.result_plot_selection,
+            extra_updates=updates,
             status_message="Updated result plot selection in YAML.")
 
     def _load_instance_plot_selection(self):
-        config = self._read_config_for_selection(self.master_plotter_config_var, self.master_plotter_editor)
-        if config is None:
+        if not self.master_plotter_editor.load_file():
             return
+        config = self.master_plotter_editor.config_data
         plots_to_do = config.get("plots_to_do", [])
         self.master_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
         self.master_plot_skip_existing_var.set(bool(config.get("skip_existing", False)))
@@ -1950,30 +2006,53 @@ class AnalysisPlotPage(ttk.Frame):
             status_message="Updated master-instance plot selection in YAML.")
 
     def _build_result_plotter_tab(self, parent):
-        controls = ttk.LabelFrame(parent, text="Run Plotter")
-        controls.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
-        controls.columnconfigure(1, weight=1)
-
+        parent.rowconfigure(0, weight=1)
         self.result_plotter_config_var = tk.StringVar(value="configs/plotter_config.yaml")
         self.result_plotter_input_var = tk.StringVar(value="results")
+        self.plot_instance_input_var = tk.StringVar(value="")
+        self.plot_instance_output_var = tk.StringVar(value="plots_single")
+        self.plot_instance_iter_var = tk.IntVar(value=1)
+        self.result_plot_order_var = tk.StringVar(value="")
 
-        ttk.Label(controls, text="Config file").grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.result_plotter_config_var).grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_file(
+        menu_tabs = ttk.Notebook(parent)
+        menu_tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 10))
+
+        batch_tab = ttk.Frame(menu_tabs)
+        batch_tab.columnconfigure(0, weight=1)
+        menu_tabs.add(batch_tab, text="Batch")
+
+        single_tab = ttk.Frame(menu_tabs)
+        single_tab.columnconfigure(0, weight=1)
+        menu_tabs.add(single_tab, text="Single instance")
+
+        advanced_tab = ttk.Frame(menu_tabs)
+        advanced_tab.columnconfigure(0, weight=1)
+        advanced_tab.rowconfigure(0, weight=1)
+        menu_tabs.add(advanced_tab, text="Advanced YAML")
+
+        batch_controls = ttk.LabelFrame(batch_tab, text="Batch Plotter")
+        batch_controls.grid(row=0, column=0, sticky="ew")
+        batch_controls.columnconfigure(1, weight=1)
+
+        ttk.Label(batch_controls, text="Config file").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(batch_controls, textvariable=self.result_plotter_config_var).grid(
+            row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(batch_controls, text="Browse", command=lambda: self.app.browse_file(
             self.result_plotter_config_var,
             [("YAML files", "*.yaml *.yml"), ("All files", "*.*")])).grid(row=0, column=2, padx=6, pady=4)
 
-        ttk.Label(controls, text="Results input").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.result_plotter_input_var).grid(row=1, column=1, sticky="ew", pady=4)
-        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(self.result_plotter_input_var)).grid(
+        ttk.Label(batch_controls, text="Results input").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(batch_controls, textvariable=self.result_plotter_input_var).grid(
+            row=1, column=1, sticky="ew", pady=4)
+        ttk.Button(batch_controls, text="Browse", command=lambda: self.app.browse_directory(self.result_plotter_input_var)).grid(
             row=1, column=2, padx=6, pady=4)
 
-        all_actions = ttk.Frame(controls)
-        all_actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
+        all_actions = ttk.Frame(batch_controls)
+        all_actions.grid(row=2, column=2, sticky="e", padx=8, pady=(6, 2))
         ttk.Button(all_actions, text="Run plotter all", command=self._run_plotter_all).pack(side="left")
 
         self.result_plot_selection = PlotSelectionPanel(
-            controls,
+            batch_controls,
             title="Batch plots to run",
             plot_names=RESULT_PLOT_NAMES,
             on_load=self._load_result_plot_selection,
@@ -1981,41 +2060,57 @@ class AnalysisPlotPage(ttk.Frame):
             columns=2)
         self.result_plot_selection.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
 
-        sep = ttk.Separator(controls, orient="horizontal")
-        sep.grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=6)
+        comparison_options = ttk.LabelFrame(batch_controls, text="Experiment Comparison Options")
+        comparison_options.grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        comparison_options.columnconfigure(1, weight=1)
+        comparison_options.rowconfigure(1, weight=1)
 
-        self.plot_instance_input_var = tk.StringVar(value="")
-        self.plot_instance_output_var = tk.StringVar(value="plots_single")
-        self.plot_instance_iter_var = tk.IntVar(value=1)
+        ttk.Label(
+            comparison_options,
+            text="Test order (YAML list)").grid(row=0, column=0, sticky="w", padx=8, pady=(6, 4))
+        ttk.Entry(comparison_options, textvariable=self.result_plot_order_var).grid(
+            row=0, column=1, sticky="ew", padx=(0, 8), pady=(6, 4))
 
-        ttk.Label(controls, text="Single result dir").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plot_instance_input_var).grid(row=5, column=1, sticky="ew", pady=4)
-        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(
-            self.plot_instance_input_var)).grid(row=5, column=2, padx=6, pady=4)
+        ttk.Label(
+            comparison_options,
+            text="Test aliases (YAML mapping)").grid(row=1, column=0, sticky="nw", padx=8, pady=(0, 6))
+        self.result_plot_aliases_text = ScrolledText(comparison_options, wrap="none", height=5)
+        self.result_plot_aliases_text.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 6))
 
-        ttk.Label(controls, text="Single output dir").grid(row=6, column=0, sticky="w", padx=8, pady=4)
-        ttk.Entry(controls, textvariable=self.plot_instance_output_var).grid(row=6, column=1, sticky="ew", pady=4)
-        ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(
-            self.plot_instance_output_var)).grid(row=6, column=2, padx=6, pady=4)
+        single_controls = ttk.LabelFrame(single_tab, text="Single-instance Plotter")
+        single_controls.grid(row=0, column=0, sticky="ew")
+        single_controls.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, text="Iteration").grid(row=7, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(single_controls, text="Single result dir").grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(single_controls, textvariable=self.plot_instance_input_var).grid(
+            row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(single_controls, text="Browse", command=lambda: self.app.browse_directory(
+            self.plot_instance_input_var)).grid(row=0, column=2, padx=6, pady=4)
+
+        ttk.Label(single_controls, text="Single output dir").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(single_controls, textvariable=self.plot_instance_output_var).grid(
+            row=1, column=1, sticky="ew", pady=4)
+        ttk.Button(single_controls, text="Browse", command=lambda: self.app.browse_directory(
+            self.plot_instance_output_var)).grid(row=1, column=2, padx=6, pady=4)
+
+        ttk.Label(single_controls, text="Iteration").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         ttk.Spinbox(
-            controls,
+            single_controls,
             from_=1,
             to=999999,
             textvariable=self.plot_instance_iter_var,
-            width=10).grid(row=7, column=1, sticky="w", pady=4)
+            width=10).grid(row=2, column=1, sticky="w", pady=4)
 
-        inst_actions = ttk.Frame(controls)
-        inst_actions.grid(row=7, column=2, sticky="e", padx=8, pady=6)
+        inst_actions = ttk.Frame(single_controls)
+        inst_actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
         ttk.Button(inst_actions, text="Run plotter instance", command=self._run_plotter_instance).pack(side="left")
 
         self.result_plotter_editor = ConfigEditor(
-            parent,
+            advanced_tab,
             project_root=self.app.project_root,
             path_var=self.result_plotter_config_var,
             status_cb=self.app.set_status)
-        self.result_plotter_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.result_plotter_editor.grid(row=0, column=0, sticky="nsew")
         self.after(0, self._load_result_plot_selection)
 
     def _build_instance_plotter_tab(self, parent):

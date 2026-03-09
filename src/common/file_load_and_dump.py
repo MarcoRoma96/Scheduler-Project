@@ -333,16 +333,35 @@ def encode_final_result(result: FinalResult):
 
 def decode_cores(obj) -> list[FatCore] | list[SlimCore]:
 
-    is_fat = len(obj) > 0 and 'operator' in obj[0]['reason'][0]
+    is_fat = False
+    for core_obj in obj:
+        probe_items = core_obj.get('reason', [])
+        if len(probe_items) == 0:
+            probe_items = core_obj.get('components', [])
+        if len(probe_items) > 0 and 'operator' in probe_items[0]:
+            is_fat = True
+            break
 
     cores: list[FatCore] | list[SlimCore] = []
 
     for core_obj in obj:
+        if 'day' in core_obj:
+            day = int(core_obj['day'])
+        elif 'days' in core_obj:
+            days = core_obj['days']
+            if isinstance(days, list):
+                if len(days) == 0:
+                    raise ValueError('Invalid core object: "days" list is empty.')
+                day = int(days[0])
+            else:
+                day = int(days)
+        else:
+            raise KeyError('day')
         
         if is_fat:
-            core = FatCore(core_obj['days'])
+            core = FatCore(day)
         else:
-            core = SlimCore(core_obj['days'])
+            core = SlimCore(day)
 
         for reason in core_obj['reason']:
             if is_fat:

@@ -349,7 +349,7 @@ def _plot_daywise_patient_boxplot(
         widths=0.72,
         patch_artist=True,
         manage_ticks=False,
-        showfliers=False,
+        showfliers=True,
     )
     for box in boxplot['boxes']:
         box.set(facecolor=box_facecolor, edgecolor='black', linewidth=0.8, alpha=0.65)
@@ -582,7 +582,7 @@ def _plot_grouped_instance_distribution(
         positions=positions,
         widths=box_width,
         patch_artist=True,
-        showfliers=False,
+        showfliers=True,
     )
     for box in boxplot['boxes']:
         box.set(facecolor=box_facecolor, edgecolor='black', linewidth=0.8, alpha=0.7)

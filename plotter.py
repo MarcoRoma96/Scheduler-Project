@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 import json
 import pandas as pd
+import gc
 from textwrap import dedent
 
 from src.common.custom_types import SlimSubproblemResult, DayName, FatSubproblemResult
@@ -17,9 +18,132 @@ from src.plotters.solving_times_by_day import plot_solving_times_by_day
 from src.plotters.requests_per_patient import plot_requests_per_patient
 from src.plotters.aggregate_best_solution_value import plot_aggregate_best_solution_value
 from src.plotters.equal_requests_between_iterations import plot_equal_requests_between_iterations
+from src.plotters.experiment_group_comparison import plot_experiment_group_comparison
 
 if __name__ != '__main__':
     exit(0)
+
+ANALYTICAL_PLOTS = {
+    'result_value_vs_time',
+    'core_info',
+    'solving_times',
+    'solving_times_by_day',
+    'requests_per_patient',
+    'aggregate_best_solution_value',
+    'experiment_group_comparison',
+}
+
+
+def _read_analysis_sheet(file_path: Path, sheet_name: str, required_columns: set[str]) -> pd.DataFrame:
+    if len(required_columns) == 0:
+        return pd.DataFrame()
+    ordered_required_columns = sorted(required_columns)
+    header_df = pd.read_excel(file_path, sheet_name=sheet_name, nrows=0)
+    use_columns = [column_name for column_name in header_df.columns if column_name in required_columns]
+    if len(use_columns) == 0:
+        return pd.DataFrame(columns=ordered_required_columns)
+    data_df = pd.read_excel(file_path, sheet_name=sheet_name, usecols=use_columns)
+    return data_df.reindex(columns=ordered_required_columns)
+
+
+def _get_required_master_columns(plots_to_do: list[str]) -> set[str]:
+    columns = {'config', 'group', 'instance', 'iteration'}
+
+    if 'result_value_vs_time' in plots_to_do:
+        columns.update({
+            'master_time',
+            'master_objective_value',
+            'cache_time',
+            'cache_objective_value',
+            'final_objective_value',
+        })
+
+    if 'core_info' in plots_to_do:
+        columns.add('master_average_scheduled_request_duration_per_day')
+        for core_type in ['generalist', 'basic', 'reduced', 'pruned', 'expanded']:
+            columns.update({
+                f'{core_type}_core_number',
+                f'{core_type}_average_core_size',
+                f'{core_type}_min_core_size',
+                f'{core_type}_max_core_size',
+                f'{core_type}_average_total_duration_per_core',
+                f'{core_type}_min_total_duration_per_core',
+                f'{core_type}_max_total_duration_per_core',
+                f'{core_type}_average_care_unit_number_per_core',
+                f'{core_type}_min_care_unit_number_per_core',
+                f'{core_type}_max_care_unit_number_per_core',
+            })
+
+    if 'solving_times' in plots_to_do:
+        columns.update({'master_time', 'cache_time'})
+
+    if 'requests_per_patient' in plots_to_do:
+        columns.update({
+            'master_average_request_number_per_patient_same_day',
+            'master_min_request_number_per_patient_same_day',
+            'master_max_request_number_per_patient_same_day',
+            'final_average_request_number_per_patient_same_day',
+            'final_min_request_number_per_patient_same_day',
+            'final_max_request_number_per_patient_same_day',
+            'master_average_care_unit_used_per_patient_same_day',
+            'master_min_care_unit_used_per_patient_same_day',
+            'master_max_care_unit_used_per_patient_same_day',
+            'final_average_care_unit_used_per_patient_same_day',
+            'final_min_care_unit_used_per_patient_same_day',
+            'final_max_care_unit_used_per_patient_same_day',
+            'master_total_operator_used_per_patient',
+            'master_min_operator_used_per_patient',
+            'master_max_operator_used_per_patient',
+            'final_total_operator_used_per_patient',
+            'final_min_operator_used_per_patient',
+            'final_max_operator_used_per_patient',
+        })
+
+    if 'aggregate_best_solution_value' in plots_to_do:
+        columns.add('final_objective_value')
+
+    if 'experiment_group_comparison' in plots_to_do:
+        columns.update({
+            'master_time',
+            'master_status',
+            'master_gap',
+            'master_objective_value',
+            'master_upper_bound',
+            'final_objective_value',
+            'final_total_scheduled_request_duration',
+            'final_total_time_slots_remaining',
+            'final_total_scheduled_request_number',
+            'final_total_rejected_request_number',
+            'expanded_core_number',
+            'pruned_core_number',
+            'reduced_core_number',
+            'basic_core_number',
+            'generalist_core_number',
+            'preemptive_core_number',
+            'expanded_average_core_size',
+            'pruned_average_core_size',
+            'reduced_average_core_size',
+            'basic_average_core_size',
+            'generalist_average_core_size',
+            'preemptive_average_core_size',
+        })
+
+    return columns
+
+
+def _get_required_subproblem_columns(plots_to_do: list[str]) -> set[str]:
+    columns: set[str] = set()
+
+    if any(plot_name in plots_to_do for plot_name in [
+            'result_value_vs_time',
+            'solving_times',
+            'experiment_group_comparison']):
+        columns.update({'config', 'group', 'instance', 'iteration', 'time'})
+
+    if 'solving_times_by_day' in plots_to_do:
+        columns.update({'config', 'group', 'instance', 'iteration', 'day', 'time', 'rejected_request_number'})
+
+    return columns
 
 def plot_instance(input_path: Path, output_path: Path, iteration_index: int):
 
@@ -99,6 +223,7 @@ parser = ArgumentParser(
           requests_per_patient
           equal_requests_between_iterations
           aggregate_best_solution_value  (currently incomplete)
+          experiment_group_comparison
         """))
 sub_parsers = parser.add_subparsers(dest='command', metavar='{all,instance}')
 sub_parsers.required = True
@@ -288,7 +413,10 @@ if 'best_instance' in config['plots_to_do'] or 'best_instance_subproblems' in co
                 with open(cores_path, 'r') as file:
                     cores = decode_cores(json.load(file))
                 
-                core_days = set([core.day[0] for core in cores])
+                core_days = set([
+                    int(core.day[0]) if isinstance(core.day, (list, tuple)) else int(core.day)
+                    for core in cores
+                ])
                 all_subproblem_result: dict[DayName, FatSubproblemResult] | dict[DayName, SlimSubproblemResult] = {}
 
                 for day_name in core_days:
@@ -309,38 +437,62 @@ if 'best_instance' in config['plots_to_do'] or 'best_instance_subproblems' in co
 
         print(f'done')
 
-print('Loading Excel data...', end='')
-instance_df = pd.read_excel(pd.ExcelFile(input_path.joinpath('analysis', 'instance_analysis.xlsx')), 'Master instance data')
-master_result_df = pd.read_excel(pd.ExcelFile(input_path.joinpath('analysis', 'master_result_analysis.xlsx')), 'Master result data')
-subproblem_result_df = pd.read_excel(pd.ExcelFile(input_path.joinpath('analysis', 'subproblem_result_analysis.xlsx')), 'Subproblem result data')
-print('done')
+master_result_df = pd.DataFrame()
+subproblem_result_df = pd.DataFrame()
+
+if any(plot_name in config['plots_to_do'] for plot_name in ANALYTICAL_PLOTS):
+    print('Loading Excel data...', end='')
+    master_required_columns = _get_required_master_columns(config['plots_to_do'])
+    subproblem_required_columns = _get_required_subproblem_columns(config['plots_to_do'])
+
+    master_result_df = _read_analysis_sheet(
+        input_path.joinpath('analysis', 'master_result_analysis.xlsx'),
+        'Master result data',
+        master_required_columns)
+    subproblem_result_df = _read_analysis_sheet(
+        input_path.joinpath('analysis', 'subproblem_result_analysis.xlsx'),
+        'Subproblem result data',
+        subproblem_required_columns)
+    print('done')
 
 if 'result_value_vs_time' in config['plots_to_do']:
     print('Plotting \'result_value_vs_time\'')
     plot_result_value_vs_time(master_result_df, subproblem_result_df, input_path, config)
+    gc.collect()
 
 if 'core_info' in config['plots_to_do']:
     print('Plotting \'core_info\'')
     plot_core_info(master_result_df, input_path, config)
+    gc.collect()
 
 if 'solving_times' in config['plots_to_do']:
     print('Plotting \'solving_times\'')
     plot_solving_times(master_result_df, subproblem_result_df, input_path, config)
+    gc.collect()
 
 if 'solving_times_by_day' in config['plots_to_do']:
     print('Plotting \'solving_times_by_day\'')
     plot_solving_times_by_day(subproblem_result_df, input_path, config)
+    gc.collect()
 
 if 'requests_per_patient' in config['plots_to_do']:
     print('Plotting \'requests_per_patient\'')
     plot_requests_per_patient(master_result_df, input_path, config)
+    gc.collect()
 
 if 'equal_requests_between_iterations' in config['plots_to_do']:
     print('Plotting \'equal_requests_between_iterations\'')
     plot_equal_requests_between_iterations(input_path, config)
+    gc.collect()
 
 if 'aggregate_best_solution_value' in config['plots_to_do']:
     print('Plotting \'aggregate_best_solution_value\'')
     plot_aggregate_best_solution_value(master_result_df, input_path, config)
+    gc.collect()
+
+if 'experiment_group_comparison' in config['plots_to_do']:
+    print('Plotting \'experiment_group_comparison\'')
+    plot_experiment_group_comparison(master_result_df, subproblem_result_df, input_path, config)
+    gc.collect()
 
 print('Plotting process done')

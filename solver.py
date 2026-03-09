@@ -1012,8 +1012,8 @@ def solve_instance(
         print(f'[iter {iteration_index}] [CORE] Added {len(cores)} \'{config["core_type"]}\' cores in this iteration.')
         
         # Controllo sul raggiungimento dell'approssimazione dell'ottimo
-        if config['early_stop_optimum_approximation_percentage'] != 1.0:
-            if master_result_value * config['percentage_of_optimum_approach'] >= final_result_value:
+        if config['early_stop_optimum_approximation_percentage'] != 0.0:
+            if (master_result_value - final_result_value) / master_result_value <= config['early_stop_optimum_approximation_percentage']:
                 print(f'[iter {iteration_index}] [STOP] Reached the optimum approximation (final\'s {final_result_value} vs master\'s {master_result_value})')
                 print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
                 break

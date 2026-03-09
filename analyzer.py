@@ -30,9 +30,19 @@ def write_excel_sheet(df: pd.DataFrame, writer: pd.ExcelWriter, sheet_name: str)
 
     # Aggiustamento dell'ampiezza delle colonne
     for column_name, column in df.items():
-        column_length = max(column.astype(str).map(len).max(), len(column_name)) # type: ignore
+        def _safe_text_len(value) -> int:
+            try:
+                missing = pd.isna(value)
+                if isinstance(missing, bool) and missing:
+                    return 3  # 'NaN'
+            except Exception:
+                pass
+            return len(str(value))
+
+        max_cell_length = int(column.map(_safe_text_len).max()) if len(column) > 0 else 0
+        column_length = max(max_cell_length, len(str(column_name)))
         col_idx = df.columns.get_loc(column_name)
-        writer.sheets[sheet_name].set_column(col_idx, col_idx, column_length)
+        writer.sheets[sheet_name].set_column(col_idx, col_idx, min(column_length + 1, 120))
 
 # Definizione dei parametri a linea di comando
 parser = ArgumentParser(prog='Analyzer')

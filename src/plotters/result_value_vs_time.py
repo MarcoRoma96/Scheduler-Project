@@ -8,15 +8,26 @@ def plot_result_value_vs_time(
         master_result_df: pd.DataFrame, subproblem_result_df: pd.DataFrame,
         results_path: Path, config):
     
-    if 'cache_time' not in master_result_df:
-        master_result_df['cache_time'] = pd.Series([None for _ in range(len(master_result_df))], index=master_result_df.index)
-    if 'cache_objective_value' not in master_result_df:
-        master_result_df['cache_objective_value'] = pd.Series([None for _ in range(len(master_result_df))], index=master_result_df.index)
+    required_master_columns = [
+        'config', 'group', 'instance', 'iteration',
+        'master_time', 'master_objective_value', 'cache_time', 'cache_objective_value', 'final_objective_value'
+    ]
+    # reindex+copy avoids fragmented frame warnings from repeated column inserts.
+    master_result_df = master_result_df.reindex(columns=required_master_columns).copy()
+    for numeric_column in [
+            'iteration',
+            'master_time',
+            'master_objective_value',
+            'cache_time',
+            'cache_objective_value',
+            'final_objective_value']:
+        master_result_df[numeric_column] = pd.to_numeric(master_result_df[numeric_column], errors='coerce').fillna(0.0)
 
-    master_result_df = master_result_df[['config', 'group', 'instance', 'iteration',
-        'master_time', 'master_objective_value', 'cache_time', 'cache_objective_value', 'final_objective_value']]
-    master_result_df = master_result_df.fillna(0)
-    
+    required_subproblem_columns = ['config', 'group', 'instance', 'iteration', 'time']
+    subproblem_result_df = subproblem_result_df.reindex(columns=required_subproblem_columns).copy()
+    subproblem_result_df['iteration'] = pd.to_numeric(subproblem_result_df['iteration'], errors='coerce').fillna(0).astype(int)
+    subproblem_result_df['time'] = pd.to_numeric(subproblem_result_df['time'], errors='coerce').fillna(0.0)
+
     for key, master_iterations in master_result_df.groupby(['config', 'group', 'instance']):
 
         if not is_combination_to_do(key[0], key[1], key[2], config):
@@ -63,4 +74,4 @@ def plot_result_value_vs_time(
         save_path.mkdir(exist_ok=True)
 
         fig.savefig(save_path.joinpath('result_value_vs_time.png'))
-        plt.close('all')
+        plt.close(fig)

@@ -9,6 +9,7 @@ RESULT_PLOT_NAMES = [
     "requests_per_patient",
     "equal_requests_between_iterations",
     "aggregate_best_solution_value",
+    "experiment_group_comparison",
 ]
 
 MASTER_INSTANCE_PER_INSTANCE_PLOT_NAMES = [

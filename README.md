@@ -207,7 +207,7 @@ Risoluzione one-shot (senza loop iterativo), utile per baseline:
 
 - modalità `all`: grafici batch usando risultati + Excel analysis
 - modalità `instance`: plot dettagliato di una singola istanza/iterazione
-- i plot aggregati (`result_value_vs_time`, `core_info`, `solving_times`, `solving_times_by_day`, `requests_per_patient`, `aggregate_best_solution_value`) richiedono prima l’esecuzione di `analyzer.py`
+- i plot aggregati (`result_value_vs_time`, `core_info`, `solving_times`, `solving_times_by_day`, `requests_per_patient`, `aggregate_best_solution_value`, `experiment_group_comparison`) richiedono prima l’esecuzione di `analyzer.py`
 
 In pratica il plotter copre due famiglie di grafici:
 
@@ -542,6 +542,7 @@ Valori `plots_to_do`:
 - `requests_per_patient`
 - `equal_requests_between_iterations`
 - `aggregate_best_solution_value` (attualmente incompleto)
+- `experiment_group_comparison`
 
 Significato dei plot disponibili:
 
@@ -557,6 +558,7 @@ Significato dei plot disponibili:
 | `requests_per_patient` | `all` | `analysis/master_result_analysis.xlsx` | `plots/requests_per_patient.png` | Pannello 2x2 sull'evoluzione delle richieste per paziente e delle risorse usate per paziente, confrontando master e final lungo le iterazioni. | Implementato, ma le metriche sottostanti ereditano i naming talvolta fuorvianti dei KPI analyzer |
 | `equal_requests_between_iterations` | `all` | `master_result.json` + `final_result.json` per iterazione | `plots/equal_requests_between_iterations.png` | Stabilita' inter-iterazione: confronta il numero totale di richieste e quante richieste restano uguali rispetto all'iterazione precedente, per master e final. | Implementato |
 | `aggregate_best_solution_value` | `all` | `analysis/master_result_analysis.xlsx` | previsto `plots/...` | Doveva aggregare i migliori valori soluzione su piu' istanze/configurazioni, ma il modulo oggi si ferma dopo una stampa intermedia e non salva il grafico. | Incompleto |
+| `experiment_group_comparison` | `all` | `analysis/master_result_analysis.xlsx` + `analysis/subproblem_result_analysis.xlsx` | `plots/comparison_*.png` (7 figure) | Cruscotto aggregato per confronto test/gruppi: boxplot su iterazioni LBBD, core medi/iterazione, tempo totale, gap finale%; istogrammi su numero ottimi + gap medio, tempi totali master/subproblem; figura combinata con istogramma del tempo medio master/iterazione e boxplot della distribuzione (per iterazione) dei tempi medi subproblem. | Implementato |
 
 Modalità `instance`:
 
