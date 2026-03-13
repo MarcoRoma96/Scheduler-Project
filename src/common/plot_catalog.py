@@ -25,6 +25,7 @@ MASTER_INSTANCE_AGGREGATE_PLOT_NAMES = [
     "instance_daily_average_spread_capacity_distribution",
     "instance_request_count_distribution",
     "instance_duration_weighted_request_count_distribution",
+    "instance_same_service_overlapping_window_distribution",
 ]
 
 MASTER_INSTANCE_PLOT_NAMES = [

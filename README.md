@@ -146,7 +146,9 @@ Funzionalita principali:
 - crea servizi (durata triangolare)
 - crea pazienti
 - riempie progressivamente finestre di richiesta fino al target di saturazione (`request_over_disponibility_ratio`)
+- estrae l'ampiezza di ogni finestra con distribuzione triangolare tra `1` e `window_max_size`, con moda `ceil(window_max_size / 3)`
 - opzionalmente copia finestre tra servizi dello stesso paziente (`same_window_percentage`)
+- opzionalmente ripara le finestre dello stesso servizio dello stesso paziente per renderle disgiunte (`enforce_same_service_disjoint_windows`)
 
 ### Subproblem generator (`src/generators/subproblem_generator.py`)
 
@@ -289,6 +291,13 @@ Plot aggregati su tutte le istanze:
     - `weighted_request_count(p) = somma sui servizi richiesti di len(windows(service)) * duration(service)`
   - il boxplot dell'istanza usa i valori `weighted_request_count(p)` su tutti i pazienti
 
+- `instance_same_service_overlapping_window_distribution.png`
+  - per ogni paziente `p` e servizio `s`:
+    - una finestra `w_i` conta se esiste almeno una finestra `w_j` dello stesso servizio `s` dello stesso paziente `p`, con `i != j`, tale che `w_i` e `w_j` si sovrappongono in almeno un giorno
+  - per ogni paziente:
+    - `same_service_overlap_count(p) = numero totale di finestre che soddisfano la condizione sopra, sommando su tutti i servizi`
+  - il boxplot dell'istanza usa i valori `same_service_overlap_count(p)` su tutti i pazienti
+
 Nota importante sulle scale:
 
 - il file `master_instance_plotter.py` contiene il flag globale:
@@ -341,8 +350,11 @@ Parametri `base`:
 | `service_duration.mode` | `int` | Moda triangolare durata servizio |
 | `patient_number` | `int` | Numero pazienti |
 | `request_over_disponibility_ratio` | `float` | Saturazione target rispetto capacità totale |
-| `window_max_size` | `int` | Ampiezza massima finestra richiesta (giorni) |
+| `window_max_size` | `int` | Ampiezza massima inclusiva della finestra richiesta (giorni), estratta con distribuzione triangolare tra `1` e `window_max_size` e moda `ceil(window_max_size / 3)` |
 | `same_window_percentage` | `float` in `[0,1]` | Probabilità di copiare finestre tra servizi dello stesso paziente |
+| `enforce_same_service_disjoint_windows` | `bool` | Se `true`, post-processa le finestre dello stesso servizio dello stesso paziente per renderle disgiunte con shift e, se necessario, riduzione della tolleranza |
+
+Con `enforce_same_service_disjoint_windows: true`, il generatore applica il repair dopo tutta la costruzione dell'istanza, quindi anche dopo l'eventuale effetto di `same_window_percentage`. Se per uno stesso paziente/servizio il numero di richieste supera il numero di giorni dell'orizzonte, la generazione fallisce con errore esplicito perché non esiste una disposizione pairwise disjoint neppure riducendo tutte le finestre a lunghezza `1`.
 
 ### 5.3 Config generazione subproblem (`configs/subproblem_generator_config.yaml`)
 
@@ -651,6 +663,13 @@ results/
     └── subproblem_result_analysis.xlsx
 ```
 
+Note pratiche:
+
+- `instance_analysis.xlsx` contiene il riassunto finale per istanza. Qui trovi anche il `final_gap_*` globale della run:
+  - per LBBD: ultimo upper bound del master vs miglior soluzione finale feasible trovata;
+  - per monolitico: incumbent, bound e gap letti direttamente dal `solver_log.log` di Gurobi.
+- `master_result_analysis.xlsx` contiene invece le metriche per iterazione LBBD, incluse le colonne `lbbd_final_gap_*` calcolate iterazione per iterazione.
+
 ### 6.5 Output plotter
 
 ```text
@@ -695,7 +714,8 @@ Modalità `instance` scrive invece nella cartella di output specificata:
     ├── instance_daily_weighted_window_overlap_distribution.png
     ├── instance_daily_average_spread_capacity_distribution.png
     ├── instance_request_count_distribution.png
-    └── instance_duration_weighted_request_count_distribution.png
+    ├── instance_duration_weighted_request_count_distribution.png
+    └── instance_same_service_overlapping_window_distribution.png
 ```
 
 ## 7) KPI estratti dall’analyzer
@@ -787,6 +807,45 @@ Sotto, per ogni famiglia, e' indicato che cosa rappresenta l'elemento `x_i`. Qua
   Formula: per ogni finestra `(p, s, w)` dell'istanza, se esiste almeno un giorno della finestra in cui il servizio `s` del paziente `p` e' schedulato, si aggiunge `duration(s) * priority(p)`.
   Nota: in questa analisi la penalizzazione `minimize_hospital_accesses` non viene applicata, perche' l'analyzer richiama `get_result_value(..., [], None)`.
   Colonna: `objective_value`.
+- `lbbd_final_gap_value`, `lbbd_final_gap_pct`: gap LBBD per iterazione, riportato in `master_result_analysis.xlsx`, tra upper bound del master dell'iterazione e valore feasible finale prodotto dai sottoproblemi nella stessa iterazione.
+  Formula:
+  `lbbd_final_gap_value = max(0, master_upper_bound - final_objective_value)`
+  `lbbd_final_gap_pct = 100 * lbbd_final_gap_value / abs(final_objective_value)`
+  Sono valorizzate solo se l'analyzer ha sia `master_upper_bound` dal log Gurobi, sia `final_objective_value` dal `final_result`.
+- `lbbd_final_gap_over_operator_total_duration_ratio`, `lbbd_final_gap_over_operator_total_duration_pct`: normalizzazione dello stesso gap rispetto alla capacita' totale operatori dell'istanza master.
+  Formula:
+  `lbbd_final_gap_over_operator_total_duration_ratio = lbbd_final_gap_value / operator_total_duration`
+  `lbbd_final_gap_over_operator_total_duration_pct = 100 * lbbd_final_gap_over_operator_total_duration_ratio`
+  Questa normalizzazione e' utile per capire l'ordine di grandezza del gap rispetto alla capacita' totale. L'interpretazione come "slot mancanti" e' esatta quando le priorita' sono tutte `1` e il valore obiettivo coincide di fatto con una durata totale.
+- `final_gap_source`, `final_gap_feasible_value`, `final_gap_upper_bound`, `final_gap_value`, `final_gap_pct`: sintesi finale globale per istanza, riportata in `instance_analysis.xlsx`.
+  Casi:
+  - LBBD: `final_gap_upper_bound` viene dall'ultimo `master_log.log`, `final_gap_feasible_value` dal `best_final_result_so_far.json`.
+  - monolitico: `final_gap_upper_bound`, `final_gap_feasible_value` e `final_gap_pct` vengono dal `solver_log.log` top-level di Gurobi.
+  Formula numerica comune:
+  `final_gap_value = max(0, final_gap_upper_bound - final_gap_feasible_value)`
+  Se disponibile, `final_gap_pct` e' quello del log Gurobi; altrimenti viene ricostruito come:
+  `final_gap_pct = 100 * final_gap_value / abs(final_gap_feasible_value)`
+- `final_gap_over_operator_total_duration_ratio`, `final_gap_over_operator_total_duration_pct`: stesso gap finale globale, normalizzato rispetto alla disponibilita' totale degli operatori dell'istanza.
+  Formula:
+  `final_gap_over_operator_total_duration_ratio = final_gap_value / operator_total_duration`
+  `final_gap_over_operator_total_duration_pct = 100 * final_gap_over_operator_total_duration_ratio`
+  `pct` significa semplicemente `percentage`, cioe' "espresso in percentuale".
+- `run_status`, `run_stage`, `run_message`, `run_error_code`, `run_return_code`, `run_timestamp`, `run_stop_reason`, `run_stop_iteration`, `run_total_time_elapsed`, `run_last_master_status`: copia dei campi grezzi da `run_status.json`, utili per debug del worker/processo.
+  Attenzione: `run_status = success` significa solo che il processo si e' concluso senza errore tecnico, non che l'istanza sia ottima.
+- `status`, `status_reason`: classificazione finale sintetica dell'esito dell'istanza in `instance_analysis.xlsx`.
+  Valori tipici:
+  - `optimal`: per LBBD, run uscita con uno stop di accettazione previsto dal solver/config, prima di `total_time_limit`, e senza `last_master_status = time_limit`
+  - `optimality_uncertain_master_time_limit`: gap finale chiuso, ma ultimo master chiuso per time limit
+  - `optimality_uncertain_total_time_limit`: stop di accettazione raggiunto, ma il tempo totale registrato arriva almeno a `total_time_limit`
+  - `max_iteration_feasible` / `max_iteration_no_solution`: raggiunto il massimo numero di iterazioni
+  - `total_time_limit_feasible` / `total_time_limit_no_solution`: raggiunto il limite temporale totale della LBBD
+  - `failed_memory_limit`: worker terminato per memory limit
+  - `failed_exception`: worker terminato per eccezione
+  - `time_limit_feasible` / `time_limit_no_solution`: casi monolitici dal log del solver
+  - `memory_limit_feasible` / `memory_limit_no_solution`: casi monolitici dal log del solver
+  - `completed_nonoptimal`: run conclusa con soluzione ma gap finale non chiuso
+  La classificazione LBBD usa in priorita' `run_stop_reason` e gli altri campi persistiti nel `run_status.json`; per run storiche prive di questi campi resta un fallback legacy basato su gap finale e `final_master_status`.
+- `solver_status`, `solver_objective_value`, `solver_upper_bound`, `solver_gap`, `solver_time`, ...: colonne aggiuntive presenti in `instance_analysis.xlsx` per i run monolitici/single-pass, copiate dal `solver_log.log` top-level. Servono per distinguere chiaramente il dato del solver dal valore ricalcolato dall'analyzer sul `result.json`.
 - `time_slots_remaining_per_day` (solo `final_result`): capacita' residua per giorno.
   Formula elementare: `sum durata operatori del giorno - sum durata richieste schedulate del giorno`.
   Colonne: `min_time_slots_remaining_per_day`, `max_time_slots_remaining_per_day`, `average_time_slots_remaining_per_day`.

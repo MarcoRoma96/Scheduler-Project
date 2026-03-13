@@ -21,12 +21,14 @@ from src.plotters.master_instance_overview import (
     get_max_patient_weighted_window_overlap,
     get_max_patient_window_overlap,
     get_request_count_per_patient,
+    get_same_service_overlapping_window_count_per_patient,
     get_spread_capacity_heatmap_max,
     plot_average_window_overlap_by_day,
     plot_grouped_instance_average_spread_capacity_distribution,
     plot_grouped_instance_duration_weighted_request_count_distribution,
     plot_grouped_instance_median_window_overlap_distribution,
     plot_grouped_instance_request_count_distribution,
+    plot_grouped_instance_same_service_overlapping_window_distribution,
     plot_grouped_instance_weighted_median_window_overlap_distribution,
     plot_master_instance_windows,
     plot_spread_capacity_heatmap,
@@ -53,6 +55,7 @@ PLOT_OUTPUT_NAMES = {
     "instance_daily_average_spread_capacity_distribution": "instance_daily_average_spread_capacity_distribution.png",
     "instance_request_count_distribution": "instance_request_count_distribution.png",
     "instance_duration_weighted_request_count_distribution": "instance_duration_weighted_request_count_distribution.png",
+    "instance_same_service_overlapping_window_distribution": "instance_same_service_overlapping_window_distribution.png",
 }
 
 
@@ -149,6 +152,7 @@ def main() -> None:
               instance_daily_average_spread_capacity_distribution
               instance_request_count_distribution
               instance_duration_weighted_request_count_distribution
+              instance_same_service_overlapping_window_distribution
             """
         ),
     )
@@ -204,6 +208,7 @@ def main() -> None:
     grouped_instance_daily_spread_capacity_means: dict[str, dict[str, list[float]]] = {}
     grouped_instance_request_counts: dict[str, dict[str, list[float]]] = {}
     grouped_instance_weighted_request_counts: dict[str, dict[str, list[float]]] = {}
+    grouped_instance_same_service_overlapping_window_counts: dict[str, dict[str, list[float]]] = {}
     group_sort_keys: dict[str, tuple[int, int, str]] = {}
     loaded_instances: list[tuple[str, Path, MasterInstance]] = []
 
@@ -320,6 +325,10 @@ def main() -> None:
             grouped_instance_weighted_request_counts.setdefault(group_name, {})[instance_file.stem] = [
                 float(value) for value in get_duration_weighted_request_count_per_patient(instance)
             ]
+        if "instance_same_service_overlapping_window_distribution" in aggregate_plots:
+            grouped_instance_same_service_overlapping_window_counts.setdefault(group_name, {})[instance_file.stem] = [
+                float(value) for value in get_same_service_overlapping_window_count_per_patient(instance)
+            ]
 
     ordered_group_names = sorted(group_sort_keys.keys(), key=lambda name: group_sort_keys[name])
 
@@ -374,6 +383,21 @@ def main() -> None:
                 {group_name: grouped_instance_weighted_request_counts[group_name] for group_name in ordered_group_names if group_name in grouped_instance_weighted_request_counts},
                 grouped_plot_path,
                 title="Distribution of duration-weighted request counts per patient by instance",
+            )
+        else:
+            print(f"Skipping existing plot: {grouped_plot_path.name}")
+
+    if "instance_same_service_overlapping_window_distribution" in aggregate_plots:
+        grouped_plot_path = output_root.joinpath(PLOT_OUTPUT_NAMES["instance_same_service_overlapping_window_distribution"])
+        if not (skip_existing and grouped_plot_path.exists()):
+            plot_grouped_instance_same_service_overlapping_window_distribution(
+                {
+                    group_name: grouped_instance_same_service_overlapping_window_counts[group_name]
+                    for group_name in ordered_group_names
+                    if group_name in grouped_instance_same_service_overlapping_window_counts
+                },
+                grouped_plot_path,
+                title="Distribution of same-service overlapping windows per patient by instance",
             )
         else:
             print(f"Skipping existing plot: {grouped_plot_path.name}")

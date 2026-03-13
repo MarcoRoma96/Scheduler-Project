@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import MaxNLocator
 
+from src.common.analysis_constants import FINAL_GAP_OPTIMAL_TOLERANCE_PCT
 from src.common.tools import is_combination_to_do
 from src.common.file_load_and_dump import decode_master_result
 
@@ -29,10 +30,6 @@ CORE_AVERAGE_SIZE_COLUMNS = [
     'generalist_average_core_size',
     'preemptive_average_core_size',
 ]
-
-# Tolleranza per considerare "chiuso" il gap finale Master-Subproblem.
-# Valore in percentuale (0.01 = 0.01%).
-FINAL_GAP_OPTIMAL_TOLERANCE_PCT = 1e-2
 
 # Tolleranza per classificare il gap del solver master come non ottimo.
 MASTER_MIP_GAP_TOLERANCE_PCT = 1e-6
@@ -256,7 +253,10 @@ def _finalize_grouped_figure(
             fontweight='bold')
 
 
-def _instance_summary(master_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.DataFrame:
+def _instance_summary(
+        master_df: pd.DataFrame,
+        sub_df: pd.DataFrame,
+        instance_df: pd.DataFrame | None = None) -> pd.DataFrame:
     sub_totals = {}
     if not sub_df.empty and 'time' in sub_df.columns:
         sub_totals = (
@@ -265,6 +265,16 @@ def _instance_summary(master_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.DataF
             .sum()
             .to_dict()
         )
+
+    instance_status_by_key: dict[tuple[str, str, str], dict[str, object]] = {}
+    if instance_df is not None and len(instance_df) > 0:
+        normalized = instance_df.copy()
+        for required_column in ['config', 'group', 'instance']:
+            if required_column in normalized.columns:
+                normalized[required_column] = normalized[required_column].astype(str)
+        for _, row in normalized.iterrows():
+            key = (str(row['config']), str(row['group']), str(row['instance']))
+            instance_status_by_key[key] = row.to_dict()
 
     rows = []
     for key, master_rows in master_df.groupby(['config', 'group', 'instance']):
@@ -329,7 +339,8 @@ def _instance_summary(master_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.DataF
             feasible_value = final_row.get('final_objective_value', np.nan)
             final_objective_value = pd.to_numeric(final_row.get('final_objective_value', np.nan), errors='coerce')
             master_status = str(final_row.get('master_status', '')).strip().lower()
-            if pd.notna(upper_bound) and pd.notna(feasible_value) and abs(float(feasible_value)) > 1e-9:
+            final_gap_pct = pd.to_numeric(final_row.get('lbbd_final_gap_pct', np.nan), errors='coerce')
+            if pd.isna(final_gap_pct) and pd.notna(upper_bound) and pd.notna(feasible_value) and abs(float(feasible_value)) > 1e-9:
                 final_gap_pct = max(0.0, (float(upper_bound) - float(feasible_value)) / abs(float(feasible_value)) * 100.0)
 
             total_scheduled_duration = pd.to_numeric(
@@ -356,9 +367,18 @@ def _instance_summary(master_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.DataF
 
         # Per i plot aggregati, "istanza ottima" significa gap finale
         # Master-Subproblem chiuso (entro tolleranza), non solo master MIP ottimo.
-        is_optimal = bool(
-            pd.notna(final_gap_pct) and
-            final_gap_pct <= FINAL_GAP_OPTIMAL_TOLERANCE_PCT)
+        status_label = ''
+        status_reason = ''
+        if key in instance_status_by_key:
+            status_label = str(instance_status_by_key[key].get('status', '')).strip().lower()
+            status_reason = str(instance_status_by_key[key].get('status_reason', '')).strip().lower()
+
+        if status_label != '':
+            is_optimal = status_label == 'optimal'
+        else:
+            is_optimal = bool(
+                pd.notna(final_gap_pct) and
+                final_gap_pct <= FINAL_GAP_OPTIMAL_TOLERANCE_PCT)
 
         rows.append({
             'config': config_name,
@@ -373,6 +393,8 @@ def _instance_summary(master_df: pd.DataFrame, sub_df: pd.DataFrame) -> pd.DataF
             'final_gap_pct': final_gap_pct,
             'final_objective_value': final_objective_value,
             'is_optimal': is_optimal,
+            'status': status_label,
+            'status_reason': status_reason,
             'timeout_feasible_nonoptimal_iteration_count': timeout_feasible_nonoptimal_iteration_count,
             'mean_master_gap_over_iterations': mean_master_gap_over_iterations,
             'scheduled_duration_over_capacity_ratio': scheduled_duration_over_capacity_ratio,
@@ -1304,12 +1326,31 @@ def plot_experiment_group_comparison(
         config):
     master_df = _filter_rows(master_result_df, config)
     sub_df = _filter_rows(subproblem_result_df, config)
+    instance_df = pd.DataFrame()
+
+    instance_analysis_path = results_path.joinpath('analysis', 'instance_analysis.xlsx')
+    if instance_analysis_path.exists():
+        try:
+            instance_df = pd.read_excel(
+                instance_analysis_path,
+                sheet_name='Instance data',
+                usecols=lambda name: name in {
+                    'config',
+                    'group',
+                    'instance',
+                    'status',
+                    'status_reason',
+                    'final_gap_pct',
+                })
+            instance_df = _filter_rows(instance_df, config)
+        except Exception as exc:
+            print(f'WARNING: unable to read instance_analysis.xlsx for experiment comparison: {exc}')
 
     if len(master_df) == 0:
         print('No master rows after filters for experiment comparison plots.')
         return
 
-    summary_df = _instance_summary(master_df, sub_df)
+    summary_df = _instance_summary(master_df, sub_df, instance_df)
     if len(summary_df) == 0:
         print('No instance summary rows available for experiment comparison plots.')
         return

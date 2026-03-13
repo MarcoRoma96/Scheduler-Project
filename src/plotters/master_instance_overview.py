@@ -643,6 +643,27 @@ def get_duration_weighted_request_count_per_patient(instance: MasterInstance) ->
     return weighted_request_counts
 
 
+def get_same_service_overlapping_window_count_per_patient(instance: MasterInstance) -> list[int]:
+    overlapping_window_counts: list[int] = []
+
+    for patient in instance.patients.values():
+        overlapping_window_count = 0
+
+        for windows in patient.requests.values():
+            overlapping_window_indexes: set[int] = set()
+            for i in range(len(windows) - 1):
+                for j in range(i + 1, len(windows)):
+                    if windows[i].overlaps(windows[j]):
+                        overlapping_window_indexes.add(i)
+                        overlapping_window_indexes.add(j)
+
+            overlapping_window_count += len(overlapping_window_indexes)
+
+        overlapping_window_counts.append(overlapping_window_count)
+
+    return overlapping_window_counts
+
+
 def plot_grouped_instance_request_count_distribution(
         grouped_instance_request_counts: dict[str, dict[str, list[float]]],
         save_path: Path,
@@ -669,5 +690,20 @@ def plot_grouped_instance_duration_weighted_request_count_distribution(
         title,
         ylabel='Duration-weighted requests per patient',
         box_facecolor='tab:red',
+        integer_y_ticks=True,
+    )
+
+
+def plot_grouped_instance_same_service_overlapping_window_distribution(
+        grouped_instance_overlapping_window_counts: dict[str, dict[str, list[float]]],
+        save_path: Path,
+        title: str,
+) -> None:
+    _plot_grouped_instance_distribution(
+        grouped_instance_overlapping_window_counts,
+        save_path,
+        title,
+        ylabel='Same-service overlapping windows per patient',
+        box_facecolor='tab:cyan',
         integer_y_ticks=True,
     )

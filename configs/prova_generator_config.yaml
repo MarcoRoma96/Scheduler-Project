@@ -26,3 +26,4 @@ base:
   request_over_disponibility_ratio: 1.25
   window_max_size: 8
   same_window_percentage: 0.2
+  enforce_same_service_disjoint_windows: false

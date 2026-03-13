@@ -4,7 +4,7 @@ groups_to_avoid: []
 instances_to_do:
 - all
 instances_to_avoid: []
-skip_existing: true
+skip_existing: false
 use_global_value_scales: true
 plots_to_do:
 - patient_windows_gantt
@@ -16,3 +16,4 @@ plots_to_do:
 - instance_daily_average_spread_capacity_distribution
 - instance_request_count_distribution
 - instance_duration_weighted_request_count_distribution
+- instance_same_service_overlapping_window_distribution

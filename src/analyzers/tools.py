@@ -17,12 +17,18 @@ def analyze_log(log_path: Path) -> dict[str, int | float | str]:
                 analysis['status'] = 'optimal'
             if line.startswith('Time limit reached'):
                 analysis['status'] = 'time_limit'
+            if line.startswith('Memory limit reached'):
+                analysis['status'] = 'memory_limit'
             
             if line.startswith('Best objective'):
                 tokens = line.split()
-                analysis['objective_value'] = float(tokens[2][:-1])
-                analysis['upper_bound'] = float(tokens[5][:-1])
-                analysis['gap'] = float(tokens[-1][:-1])
+                analysis['objective_value'] = float(tokens[2].rstrip(','))
+                analysis['upper_bound'] = float(tokens[5].rstrip(','))
+                gap_token = tokens[-1].rstrip('%')
+                if gap_token == '-':
+                    analysis['gap'] = float('nan')
+                else:
+                    analysis['gap'] = float(gap_token)
 
             if line.startswith('Root relaxation'):
                 tokens = line.split()
@@ -67,6 +73,64 @@ def get_day_number_used_by_patients(all_days_requests: dict[DayName, list[Patien
             day_used_by_patient[request.patient_name].add(day_name)
     
     return sum(len(day_names) for day_names in day_used_by_patient.values())
+
+def get_total_operator_duration(instance: MasterInstance) -> int:
+    return sum(
+        operator.duration
+        for day in instance.days.values()
+        for care_unit in day.care_units.values()
+        for operator in care_unit.values())
+
+def _safe_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def get_gap_metrics(
+        upper_bound,
+        feasible_value,
+        operator_total_duration: int | float | None,
+        prefix: str,
+        pct_override = None) -> dict[str, float]:
+    upper_bound = _safe_float(upper_bound)
+    feasible_value = _safe_float(feasible_value)
+    total_operator_duration = _safe_float(operator_total_duration)
+    gap_pct_override = _safe_float(pct_override)
+
+    gap_value = float('nan')
+    gap_pct = float('nan')
+    gap_over_operator_total_duration_ratio = float('nan')
+    gap_over_operator_total_duration_pct = float('nan')
+
+    if upper_bound is not None and feasible_value is not None:
+        gap_value = max(0.0, upper_bound - feasible_value)
+
+        if gap_pct_override is not None:
+            gap_pct = gap_pct_override
+        elif abs(feasible_value) > 1e-9:
+            gap_pct = gap_value / abs(feasible_value) * 100.0
+
+        if total_operator_duration is not None and total_operator_duration > 1e-9:
+            gap_over_operator_total_duration_ratio = gap_value / total_operator_duration
+            gap_over_operator_total_duration_pct = gap_over_operator_total_duration_ratio * 100.0
+
+    return {
+        f'{prefix}_value': gap_value,
+        f'{prefix}_pct': gap_pct,
+        f'{prefix}_over_operator_total_duration_ratio': gap_over_operator_total_duration_ratio,
+        f'{prefix}_over_operator_total_duration_pct': gap_over_operator_total_duration_pct,
+    }
+
+def get_lbbd_final_gap_metrics(
+        master_upper_bound,
+        final_objective_value,
+        operator_total_duration: int | float | None) -> dict[str, float]:
+    return get_gap_metrics(
+        master_upper_bound,
+        final_objective_value,
+        operator_total_duration,
+        prefix='lbbd_final_gap')
 
 def get_result_value(
         instance: MasterInstance,

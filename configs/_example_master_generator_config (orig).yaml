@@ -113,9 +113,15 @@ base:
     # Percentuale di riempimento della disponibilità totale dell'istanza
     request_over_disponibility_ratio: 1.25
 
-    # Massima ampiezza di ogni finestra di richiesta (in giorni)
+    # Massima ampiezza inclusiva di ogni finestra di richiesta (in giorni).
+    # L'ampiezza è estratta con distribuzione triangolare tra 1 e questo valore,
+    # con moda pari a ceil(window_max_size / 3)
     window_max_size: 8
 
     # Percentuale di volte in cui una finestra sarà uguale ad un'altra già
     # presente
     same_window_percentage: 0.0
+
+    # Se true, post-processa le finestre dello stesso servizio dello stesso
+    # paziente rendendole disgiunte tramite shift e riduzione controllata
+    enforce_same_service_disjoint_windows: false

@@ -89,6 +89,21 @@ def _get_iterative_worker_memory_limit(group_config) -> int | float | None:
     return max(limits)
 
 
+def _get_solver_termination_status(result) -> str:
+    try:
+        termination = str(result.solver.termination_condition).strip().lower()
+    except Exception:
+        termination = 'unknown'
+
+    if termination in {'optimal', 'feasible', 'locallyoptimal', 'globallyoptimal'}:
+        return 'optimal'
+    if 'time' in termination:
+        return 'time_limit'
+    if 'mem' in termination:
+        return 'memory_limit'
+    return termination
+
+
 def _build_worker_command(
         config_path: Path,
         input_path: Path,
@@ -191,7 +206,7 @@ def _run_worker_mode(args) -> int:
     ]
 
     try:
-        error_code = solve_instance(
+        error_code, run_metadata = solve_instance(
             master_instance,
             group_config,
             solving_path,
@@ -207,6 +222,7 @@ def _run_worker_mode(args) -> int:
                 message='Instance solved successfully.',
                 error_code=0,
                 stage='completed',
+                **run_metadata,
             )
         else:
             write_run_status(
@@ -218,6 +234,7 @@ def _run_worker_mode(args) -> int:
                 message=f'Solver returned error code {error_code}.',
                 error_code=error_code,
                 stage='solver',
+                **run_metadata,
             )
         return error_code
     except MemoryError as exc:
@@ -230,6 +247,7 @@ def _run_worker_mode(args) -> int:
             message=f'MemoryError: {exc}',
             error_code=90,
             stage='memory',
+            stop_reason='memory_limit',
         )
         print(f'ERROR: MemoryError while solving {instance_name}')
         return 90
@@ -243,6 +261,7 @@ def _run_worker_mode(args) -> int:
             message=f'{type(exc).__name__}: {exc}',
             error_code=91,
             stage='exception',
+            stop_reason='exception',
         )
         traceback.print_exc()
         return 91
@@ -364,7 +383,7 @@ def solve_instance(
         config,
         output_path: Path,
         iteration_summary_lines: list[str],
-        verbose: bool = False) -> int:
+        verbose: bool = False) -> tuple[int, dict[str, str | int | float | None]]:
     '''Funzione che esegue il ciclo di iterazioni necessario per risolvere una
     istanza del problema master con la configurazione fornita.'''
     
@@ -375,6 +394,20 @@ def solve_instance(
     cache_final_result_value = None
     best_cache_result_value_so_far = None
     best_subproblem_result_value_so_far = None
+    total_time_elapsed = 0.0
+    last_master_status: str | None = None
+
+    def _return(
+            error_code: int,
+            *,
+            stop_reason: str | None = None,
+            stop_iteration: int | None = None) -> tuple[int, dict[str, str | int | float | None]]:
+        return error_code, {
+            'stop_reason': stop_reason,
+            'stop_iteration': stop_iteration,
+            'total_time_elapsed': total_time_elapsed,
+            'last_master_status': last_master_status,
+        }
 
     solver_name = get_solver_name(config)
 
@@ -408,11 +441,7 @@ def solve_instance(
     if len(errors) > 0:
         for error in errors:
             print(f'[MASTER] ERROR: {error}')
-        return 1
-
-    # Valore che accumula i soli tempi di risoluzione dele varie fasi.
-    # Necessario per lo stop relativo al tempo totale
-    total_time_elapsed = 0
+        return _return(1)
 
     # Ottenimento di tutte le possibili richieste ottenibili per ogni giorno.
     # Dati utilizzati nell'espansione dei core
@@ -476,6 +505,7 @@ def solve_instance(
         master_solve_result = master_opt.solve(master_model, **solve_kwargs)
         end = time.perf_counter()
         total_time_elapsed += end - start
+        last_master_status = _get_solver_termination_status(master_solve_result)
         print(f'done ({end - start:.04}s)', end='')
         if end - start >= config['master']['time_limit']:
             print(' [TIME LIMIT]')
@@ -483,12 +513,14 @@ def solve_instance(
             print('')
         if not has_usable_solution(master_solve_result):
             print(f'[iter {iteration_index}] [MASTER] ERROR: solver returned no usable solution ({describe_solver_result(master_solve_result)})')
-            return 7
+            stop_reason = 'memory_limit' if last_master_status == 'memory_limit' else None
+            return _return(7, stop_reason=stop_reason, stop_iteration=iteration_index)
         if not load_usable_solution(master_model, master_solve_result):
             print(
                 f'[iter {iteration_index}] [MASTER] ERROR: solver returned an incumbent but Pyomo could not load it '
                 f'({describe_solver_result(master_solve_result)})')
-            return 7
+            stop_reason = 'memory_limit' if last_master_status == 'memory_limit' else None
+            return _return(7, stop_reason=stop_reason, stop_iteration=iteration_index)
 
         if config['structure_type'] in ['fat-slim', 'fat-fat']:
             master_result = get_result_from_fat_master_model(master_model)
@@ -506,7 +538,7 @@ def solve_instance(
         if len(errors) > 0:
             for error in errors:
                 print(f'[iter {iteration_index}] [MASTER] ERROR: {error}')
-            return 2
+            return _return(2, stop_iteration=iteration_index)
         
         master_result_value = get_result_value(
             master_instance, master_result,
@@ -543,12 +575,14 @@ def solve_instance(
                 print('')
             if not has_usable_solution(cache_solve_result):
                 print(f'[iter {iteration_index}] [CACHE] ERROR: solver returned no usable solution ({describe_solver_result(cache_solve_result)})')
-                return 3
+                stop_reason = 'memory_limit' if _get_solver_termination_status(cache_solve_result) == 'memory_limit' else None
+                return _return(3, stop_reason=stop_reason, stop_iteration=iteration_index)
             if not load_usable_solution(cache_model, cache_solve_result):
                 print(
                     f'[iter {iteration_index}] [CACHE] ERROR: solver returned an incumbent but Pyomo could not load it '
                     f'({describe_solver_result(cache_solve_result)})')
-                return 3
+                stop_reason = 'memory_limit' if _get_solver_termination_status(cache_solve_result) == 'memory_limit' else None
+                return _return(3, stop_reason=stop_reason, stop_iteration=iteration_index)
 
             matching = get_result_from_cache_model(cache_model)
             cache_final_result = exhume_result_from_matching(matching, output_path)
@@ -566,7 +600,7 @@ def solve_instance(
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CACHE] ERROR: {error}')
-                return 3
+                return _return(3, stop_iteration=iteration_index)
             
             # Eventuali salvataggi dei valori migliori finora incontrati
             cache_final_result_value = get_result_value(
@@ -590,7 +624,10 @@ def solve_instance(
             if cache_final_result_value >= master_result_value:
                 print(f'[iter {iteration_index}] [STOP] Reached optimum of value: {cache_final_result_value}')
                 print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
-                break
+                return _return(
+                    0,
+                    stop_reason='accepted_cache_equals_master',
+                    stop_iteration=iteration_index)
         
         if config['use_true_cache'] and iteration_index > 1:
             previous_cache_day_iterations = get_previous_cache_day_iterations(cache, master_result)
@@ -625,7 +662,7 @@ def solve_instance(
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [SUB] ERROR: {error}')
-                return 4
+                return _return(4, stop_iteration=iteration_index)
 
             # Copia del risultato del giorno corrente se trovato nella cache
             if config['use_true_cache'] and iteration_index > 1 and day_name in previous_cache_day_iterations: # type: ignore
@@ -686,12 +723,14 @@ def solve_instance(
                     print(
                         f'[iter {iteration_index}] [SUB] ERROR: day {day_name} has no usable solution '
                         f'({describe_solver_result(subproblem_solve_result)})')
-                    return 5
+                    stop_reason = 'memory_limit' if _get_solver_termination_status(subproblem_solve_result) == 'memory_limit' else None
+                    return _return(5, stop_reason=stop_reason, stop_iteration=iteration_index)
                 if not load_usable_solution(subproblem_model, subproblem_solve_result):
                     print(
                         f'[iter {iteration_index}] [SUB] ERROR: day {day_name} returned an incumbent but Pyomo could not load it '
                         f'({describe_solver_result(subproblem_solve_result)})')
-                    return 5
+                    stop_reason = 'memory_limit' if _get_solver_termination_status(subproblem_solve_result) == 'memory_limit' else None
+                    return _return(5, stop_reason=stop_reason, stop_iteration=iteration_index)
 
                 if config['structure_type'] in ['slim-fat', 'fat-fat']:
                     subproblem_result = get_result_from_fat_subproblem_model(subproblem_model)
@@ -706,7 +745,7 @@ def solve_instance(
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [SUB] ERROR: {error}')
-                return 5
+                return _return(5, stop_iteration=iteration_index)
             
             all_subproblem_result[day_name] = subproblem_result # type: ignore
         
@@ -725,7 +764,7 @@ def solve_instance(
         if len(errors) > 0:
             for error in errors:
                 print(f'[iter {iteration_index}] ERROR: {error}')
-            return 6
+            return _return(6, stop_iteration=iteration_index)
         
         # Aggiunta dei core 'preemptive' nel caso 'fat-fat'. Questi core vietano
         # il ripetersi di proposte del master che sono state comunque
@@ -804,7 +843,10 @@ def solve_instance(
         if final_result_value >= master_result_value:
             print(f'[iter {iteration_index}] [STOP] Reached optimum of value: {final_result_value}')
             print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
-            break
+            return _return(
+                0,
+                stop_reason='accepted_master_equals_final',
+                stop_iteration=iteration_index)
 
         day_names_with_rejected: list[DayName] = []
         for day_name, result in all_subproblem_result.items():
@@ -815,7 +857,10 @@ def solve_instance(
         if len(day_names_with_rejected) == 0:
             print(f'[iter {iteration_index}] [STOP] All days are satisfied! (value: {final_result_value})')
             print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
-            break
+            return _return(
+                0,
+                stop_reason='accepted_all_days_satisfied',
+                stop_iteration=iteration_index)
 
         print(f'[iter {iteration_index}] Days [ ', end='')
         for day_name in day_names_with_rejected:
@@ -864,7 +909,7 @@ def solve_instance(
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                return 7
+                return _return(7, stop_iteration=iteration_index)
         else:
             # Master fat
             if config['structure_type'] in ['fat-slim', 'fat-fat']:
@@ -883,7 +928,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 8
+                        return _return(8, stop_iteration=iteration_index)
                 
                 if config['core_type'] in ['reduced', 'pruned']:
                     start = time.perf_counter()
@@ -899,7 +944,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 9
+                        return _return(9, stop_iteration=iteration_index)
                 
                 if config['core_type'] in ['pruned']:
                     start = time.perf_counter()
@@ -915,7 +960,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 10
+                        return _return(10, stop_iteration=iteration_index)
             
             # Master slim
             else:
@@ -934,7 +979,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 11
+                        return _return(11, stop_iteration=iteration_index)
                 
                 if config['core_type'] in ['reduced', 'pruned']:
                     start = time.perf_counter()
@@ -950,7 +995,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 12
+                        return _return(12, stop_iteration=iteration_index)
                 
                 if config['core_type'] in ['pruned']:
                     start = time.perf_counter()
@@ -966,7 +1011,7 @@ def solve_instance(
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                        return 13
+                        return _return(13, stop_iteration=iteration_index)
         
         print(f'[iter {iteration_index}] [CORE] Cores creation done')
 
@@ -988,7 +1033,7 @@ def solve_instance(
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
-                return 14
+                return _return(14, stop_iteration=iteration_index)
 
         # Aggiunta dei vincoli dei core nel master
         if config['structure_type'] in ['fat-slim', 'fat-fat']:
@@ -1016,17 +1061,28 @@ def solve_instance(
             if (master_result_value - final_result_value) / master_result_value <= config['early_stop_optimum_approximation_percentage']:
                 print(f'[iter {iteration_index}] [STOP] Reached the optimum approximation (final\'s {final_result_value} vs master\'s {master_result_value})')
                 print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
-                break
+                return _return(
+                    0,
+                    stop_reason='accepted_optimum_approximation',
+                    stop_iteration=iteration_index)
         
         # Controllo sul raggiungimento del limite temporale totale
         if total_time_elapsed >= config['total_time_limit']:
             print(f'[iter {iteration_index}] [STOP] Reached maximum time limit ({int(total_time_elapsed)}s elapsed)')
             print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
-            break
+            return _return(
+                0,
+                stop_reason='total_time_limit',
+                stop_iteration=iteration_index)
 
         # Controllo sul raggiungimento del numero massimo di iterazioni
         if iteration_index == config['max_iteration']:
             print(f'[iter {iteration_index}] [STOP] Maximum iteration reached')
+            print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
+            return _return(
+                0,
+                stop_reason='max_iteration',
+                stop_iteration=iteration_index)
         
         print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
 
@@ -1034,7 +1090,7 @@ def solve_instance(
 
     print('')
 
-    return 0
+    return _return(0)
 
 # Definizione dei parametri a linea di comando
 parser = ArgumentParser(prog='Iterative instance solver')

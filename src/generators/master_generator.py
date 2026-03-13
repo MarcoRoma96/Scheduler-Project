@@ -1,4 +1,118 @@
+import math
 import random
+
+def _windows_overlap(window_a: tuple[int, int], window_b: tuple[int, int]) -> bool:
+    return not (window_a[1] < window_b[0] or window_b[1] < window_a[0])
+
+def _compute_free_gaps(
+        accepted_windows: list[tuple[int, int]],
+        min_day: int,
+        max_day: int) -> list[tuple[int, int]]:
+    if len(accepted_windows) == 0:
+        return [(min_day, max_day)]
+
+    free_gaps: list[tuple[int, int]] = []
+    cursor = min_day
+    for start_day, end_day in sorted(accepted_windows):
+        if cursor <= start_day - 1:
+            free_gaps.append((cursor, start_day - 1))
+        cursor = end_day + 1
+
+    if cursor <= max_day:
+        free_gaps.append((cursor, max_day))
+
+    return free_gaps
+
+def _build_window_candidates(
+        accepted_windows: list[tuple[int, int]],
+        original_window: tuple[int, int],
+        min_day: int,
+        max_day: int) -> list[tuple[int, int]]:
+    original_start, original_end = original_window
+    original_length = original_end - original_start + 1
+
+    free_gaps = _compute_free_gaps(accepted_windows, min_day, max_day)
+    candidates: list[tuple[int, int, int, int, int]] = []
+
+    for window_length in range(original_length, 0, -1):
+        for gap_start, gap_end in free_gaps:
+            gap_length = gap_end - gap_start + 1
+            if gap_length < window_length:
+                continue
+
+            latest_valid_start = gap_end - window_length + 1
+            candidate_start = min(max(original_start, gap_start), latest_valid_start)
+            candidate_end = candidate_start + window_length - 1
+
+            candidates.append((
+                -window_length,
+                abs(candidate_start - original_start),
+                abs(candidate_end - original_end),
+                candidate_start,
+                candidate_end))
+
+    candidates.sort()
+    return [(candidate_start, candidate_end) for _, _, _, candidate_start, candidate_end in candidates]
+
+def _repair_same_service_windows(
+        windows: list[list[int]],
+        patient_name: str,
+        service_name: str,
+        min_day: int,
+        max_day: int) -> list[list[int]]:
+    horizon_length = max_day - min_day + 1
+    if len(windows) > horizon_length:
+        raise ValueError(
+            f'Cannot enforce disjoint windows for patient {patient_name}, service {service_name}: '
+            f'{len(windows)} requests exceed the horizon length {horizon_length}.')
+
+    original_windows = sorted((int(window[0]), int(window[1])) for window in windows)
+    accepted_windows: list[tuple[int, int]] = []
+
+    for window_index, original_window in enumerate(original_windows):
+        remaining_window_number = len(original_windows) - window_index - 1
+
+        if not any(_windows_overlap(original_window, accepted_window) for accepted_window in accepted_windows):
+            occupied_days = sum(end_day - start_day + 1 for start_day, end_day in accepted_windows)
+            original_length = original_window[1] - original_window[0] + 1
+            free_days_after = horizon_length - occupied_days - original_length
+            if free_days_after >= remaining_window_number:
+                accepted_windows.append(original_window)
+                accepted_windows.sort()
+                continue
+
+        repaired_window: tuple[int, int] | None = None
+        for candidate_window in _build_window_candidates(accepted_windows, original_window, min_day, max_day):
+            occupied_days = sum(end_day - start_day + 1 for start_day, end_day in accepted_windows)
+            candidate_length = candidate_window[1] - candidate_window[0] + 1
+            free_days_after = horizon_length - occupied_days - candidate_length
+            if free_days_after < remaining_window_number:
+                continue
+
+            repaired_window = candidate_window
+            break
+
+        if repaired_window is None:
+            raise ValueError(
+                f'Cannot repair overlapping windows for patient {patient_name}, service {service_name} '
+                f'within horizon [{min_day}, {max_day}].')
+
+        accepted_windows.append(repaired_window)
+        accepted_windows.sort()
+
+    for i in range(len(accepted_windows) - 1):
+        if _windows_overlap(accepted_windows[i], accepted_windows[i + 1]):
+            raise ValueError(
+                f'Internal error while repairing windows for patient {patient_name}, service {service_name}: '
+                f'overlap remained between {accepted_windows[i]} and {accepted_windows[i + 1]}.')
+
+    for start_day, end_day in accepted_windows:
+        if start_day < min_day or end_day > max_day or start_day > end_day:
+            raise ValueError(
+                f'Internal error while repairing windows for patient {patient_name}, service {service_name}: '
+                f'invalid repaired window ({start_day}, {end_day}).')
+
+    return [[start_day, end_day] for start_day, end_day in accepted_windows]
 
 def generate_master_instance(config):
     '''Funzione che ritorna un'istanza del problema master con le
@@ -104,10 +218,17 @@ def generate_master_instance(config):
         service_duration = service['duration']
 
         # Generazione e posizionamento della finestra in maniera tale da essere
-        # completamente interna ai giorni dell'istanza
-        window_size = random.randint(1, min(config['window_max_size'], max_day - min_day))
-        start_day = random.randint(min_day, max_day - window_size)
-        end_day = start_day + window_size
+        # completamente interna ai giorni dell'istanza. L'ampiezza inclusiva
+        # della finestra è estratta da una distribuzione triangolare.
+        max_window_size = min(config['window_max_size'], max_day - min_day + 1)
+        window_size = int(random.triangular(
+            low=1,
+            high=max_window_size + 1,
+            mode=math.ceil(max_window_size / 3)))
+        window_size = max(1, min(window_size, max_window_size))
+
+        start_day = random.randint(min_day, max_day - window_size + 1)
+        end_day = start_day + window_size - 1
 
         # Scelta del paziente meno carico finora
         patient_name = min([pat for pat in patient_names], key=lambda pat: patient_total_duration[pat])
@@ -156,6 +277,16 @@ def generate_master_instance(config):
                         # Selezione e sostituzione con una finestra precedente
                         other_window = random.choice(patient['requests'][other_service_name])
                         patient['requests'][service_name][window_index] = other_window
+
+    if config.get('enforce_same_service_disjoint_windows', False):
+        for patient_name, patient in instance['patients'].items():
+            for service_name, windows in patient['requests'].items():
+                patient['requests'][service_name] = _repair_same_service_windows(
+                    windows,
+                    patient_name,
+                    service_name,
+                    min_day,
+                    max_day)
 
     # Ordinamento dei nomi delle richieste e delle finestre al loro interno
     for patient in instance['patients'].values():

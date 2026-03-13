@@ -8,6 +8,7 @@ experiment_group_comparison_config_order:
 - irreducible_pruned
 - pruned_pat_expansion
 - pruned_pat_srv_expansion
+- pruned_pat_srv_day_expansion
 - monolithic
 experiment_group_comparison_config_aliases:
   generalist: day_unsat

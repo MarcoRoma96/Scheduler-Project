@@ -9,3 +9,5 @@ instances
 *.json
 configs/monolithic_config.yaml
 configs/experiment_LBBD_config.yaml
+plots_instances
+Risultati*/

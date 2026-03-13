@@ -17,7 +17,8 @@ def write_run_status(
         message: str,
         error_code: int | None = None,
         return_code: int | None = None,
-        stage: str | None = None):
+        stage: str | None = None,
+        **extra_fields):
     output_path.mkdir(exist_ok=True)
     payload = {
         'status': status,
@@ -30,6 +31,7 @@ def write_run_status(
         'stage': stage,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
+    payload.update(extra_fields)
     with open(output_path.joinpath(RUN_STATUS_FILENAME), 'w') as file:
         json.dump(payload, file, indent=4)
 
