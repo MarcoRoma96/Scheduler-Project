@@ -1,0 +1,59 @@
+groups:
+  # 32pat_2cu_4op:
+  #   patient_number: 32
+  #   care_unit_number: 2
+  #   operator_number: 4
+  # 32pat_4cu_2op:
+  #   patient_number: 32
+  #   care_unit_number: 4
+  #   operator_number: 2
+  # 32pat_8cu_1op:
+  #   patient_number: 32
+  #   care_unit_number: 8
+  #   operator_number: 1
+  # 64pat_2cu_4op:
+  #   patient_number: 64
+  #   care_unit_number: 2
+  #   operator_number: 4
+  # 64pat_4cu_2op:
+  #   patient_number: 64
+  #   care_unit_number: 4
+  #   operator_number: 2
+  # 64pat_8cu_1op:
+  #   patient_number: 64
+  #   care_unit_number: 8
+  #   operator_number: 1
+  # 128pat_4cu_2op:
+  #   patient_number: 128
+  #   care_unit_number: 4
+  #   operator_number: 2
+  # 128pat_2cu_4op:
+  #   care_unit_number: 2
+  #   operator_number: 4
+  #   patient_number: 128
+  # 128pat_8cu_1op:
+  #   care_unit_number: 8
+  #   operator_number: 1
+  #   patient_number: 128
+  32pat_4cu_2op-w5:
+    care_unit_number: 4
+    operator_number: 2
+    patient_number: 32
+    window_max_size: 5
+base:
+  seed: 42
+  instance_number: 8
+  day_number: 32
+  care_unit_number: 4
+  operator_number: 2
+  operator_duration: 31
+  service_number: 64
+  service_duration:
+    min: 3
+    max: 12
+    mode: 3
+  patient_number: 64
+  request_over_disponibility_ratio: 1.4
+  window_max_size: 8
+  same_window_percentage: 0.3
+  enforce_same_service_disjoint_windows: true

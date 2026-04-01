@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import shlex
 import signal
 import subprocess
@@ -15,9 +16,25 @@ from tkinter.scrolledtext import ScrolledText
 
 import yaml
 
-from src.common.plot_catalog import MASTER_INSTANCE_PLOT_NAMES, RESULT_PLOT_NAMES
+from src.common.analysis_paths import get_analysis_output_path
+from src.common.plot_catalog import (
+    MASTER_INSTANCE_PLOT_NAMES,
+    RESULT_PLOT_LEVELS,
+    get_result_plot_specs,
+    parse_result_plots_to_do,
+    serialize_result_plots_to_do,
+)
 
 DELETE_FIELD = object()
+EXPERIMENT_COMPARISON_ROW_SPLIT_LABEL_TO_KEY = {
+    "None": "",
+    "Patients": "patient_number",
+    "Care units": "care_unit_number",
+    "Test": "test",
+}
+EXPERIMENT_COMPARISON_ROW_SPLIT_KEY_TO_LABEL = {
+    value: key for key, value in EXPERIMENT_COMPARISON_ROW_SPLIT_LABEL_TO_KEY.items()
+}
 
 
 def dump_inline_yaml(value) -> str:
@@ -1279,6 +1296,7 @@ class ResultsBrowser(ttk.LabelFrame):
         self.filter_group_var = tk.StringVar(value="All")
         self.filter_instance_var = tk.StringVar(value="All")
         self.filter_type_var = tk.StringVar(value="Plots (.png)")
+        self.filter_plot_scope_var = tk.StringVar(value="All")
 
         self.result_dirs: list[tuple[str, str, str, Path]] = []
         self.file_index: dict[str, Path] = {}
@@ -1295,7 +1313,7 @@ class ResultsBrowser(ttk.LabelFrame):
 
         filters = ttk.Frame(self)
         filters.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
-        for idx in [1, 3, 5, 7]:
+        for idx in [1, 3, 5, 7, 9]:
             filters.columnconfigure(idx, weight=1)
 
         ttk.Label(filters, text="Config").grid(row=0, column=0, padx=(0, 6), sticky="w")
@@ -1320,12 +1338,21 @@ class ResultsBrowser(ttk.LabelFrame):
             state="readonly",
             values=[
                 "Plots (.png)",
-                "Analysis (.xlsx)",
+                "Analysis tables (.xlsx/.csv)",
                 "JSON results",
                 "Logs (.log)",
                 "All files"])
         self.type_combo.grid(row=0, column=7, sticky="ew")
         self.type_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_file_list())
+
+        ttk.Label(filters, text="Plot scope").grid(row=0, column=8, padx=(8, 6), sticky="w")
+        self.plot_scope_combo = ttk.Combobox(
+            filters,
+            textvariable=self.filter_plot_scope_var,
+            state="readonly",
+            values=["All", "Comparison", "Group", "Run"])
+        self.plot_scope_combo.grid(row=0, column=9, sticky="ew")
+        self.plot_scope_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_file_list())
 
         action_row = ttk.Frame(self)
         action_row.grid(row=2, column=0, sticky="ew", padx=8, pady=(2, 6))
@@ -1382,6 +1409,7 @@ class ResultsBrowser(ttk.LabelFrame):
         self.filter_config_var.set("All")
         self.filter_group_var.set("All")
         self.filter_instance_var.set("All")
+        self.filter_plot_scope_var.set("All")
         self._refresh_file_list()
 
     def _on_filter_change(self):
@@ -1422,17 +1450,37 @@ class ResultsBrowser(ttk.LabelFrame):
         root = self._results_root()
         selected_dirs = self._selected_dirs()
         category = self.filter_type_var.get()
+        plot_scope = self.filter_plot_scope_var.get()
 
         files: list[tuple[str, Path]] = []
 
-        if category == "Analysis (.xlsx)":
+        if category == "Analysis tables (.xlsx/.csv)":
+            self.plot_scope_combo.configure(state="disabled")
             analysis_dir = root.joinpath("analysis")
             if analysis_dir.exists():
-                files.extend([("analysis", path) for path in sorted(analysis_dir.glob("*.xlsx"))])
+                files.extend([("analysis", path) for path in sorted(analysis_dir.rglob("*.xlsx"))])
+                files.extend([("analysis", path) for path in sorted(analysis_dir.rglob("*.csv"))])
+        elif category == "Plots (.png)":
+            self.plot_scope_combo.configure(state="readonly")
+            aggregate_plots_dir = root.joinpath("plots")
+            if aggregate_plots_dir.exists():
+                if plot_scope in {"All", "Comparison"}:
+                    files.extend([
+                        ("plot", path)
+                        for path in sorted(aggregate_plots_dir.rglob("*.png"))
+                        if "groups" not in path.parts
+                    ])
+                if plot_scope in {"All", "Group"}:
+                    group_root = aggregate_plots_dir.joinpath("groups")
+                    if group_root.exists():
+                        files.extend([("plot", path) for path in sorted(group_root.rglob("*.png"))])
+        else:
+            self.plot_scope_combo.configure(state="disabled")
 
         for result_dir in selected_dirs:
             if category == "Plots (.png)":
-                files.extend([("plot", path) for path in sorted(result_dir.glob("plots/**/*.png"))])
+                if plot_scope in {"All", "Run"}:
+                    files.extend([("plot", path) for path in sorted(result_dir.glob("plots/**/*.png"))])
             elif category == "JSON results":
                 files.extend([("json", path) for path in sorted(result_dir.glob("*.json"))])
                 files.extend([("json", path) for path in sorted(result_dir.glob("iter_*/*.json"))])
@@ -1446,6 +1494,9 @@ class ResultsBrowser(ttk.LabelFrame):
             analysis_dir = root.joinpath("analysis")
             if analysis_dir.exists():
                 files.extend([("analysis", path) for path in sorted(analysis_dir.rglob("*")) if path.is_file()])
+            aggregate_plots_dir = root.joinpath("plots")
+            if aggregate_plots_dir.exists():
+                files.extend([("plot", path) for path in sorted(aggregate_plots_dir.rglob("*")) if path.is_file()])
 
         unique_files = sorted(set(files), key=lambda item: str(item[1]))
 
@@ -1535,6 +1586,138 @@ class PlotSelectionPanel(ttk.LabelFrame):
     def clear_all(self):
         for variable in self.plot_vars.values():
             variable.set(False)
+
+
+class ResultPlotLevelPanel(ttk.Frame):
+    def __init__(self, parent, level: str, specs: list[dict], on_load, on_apply):
+        super().__init__(parent)
+        self.level = level
+        self.specs = list(specs)
+        self.on_load = on_load
+        self.on_apply = on_apply
+        self.plot_vars: dict[str, tk.BooleanVar] = {
+            str(spec['key']): tk.BooleanVar(value=bool(spec.get('default_enabled', False)))
+            for spec in self.specs
+        }
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        actions = ttk.Frame(self)
+        actions.grid(row=0, column=0, sticky='ew', padx=8, pady=(8, 4))
+        ttk.Button(actions, text='Load from YAML', command=self.on_load).pack(side='left')
+        ttk.Button(actions, text='Apply to YAML', command=self.on_apply).pack(side='left', padx=(6, 0))
+        ttk.Button(actions, text='Select all', command=self.select_all).pack(side='left', padx=(12, 0))
+        ttk.Button(actions, text='Clear all', command=self.clear_all).pack(side='left', padx=(6, 0))
+
+        outer = ttk.Frame(self)
+        outer.grid(row=1, column=0, sticky='nsew', padx=8, pady=(0, 8))
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky='nsew')
+        scrollbar = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky='ns')
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        inner = ttk.Frame(canvas)
+        window = canvas.create_window((0, 0), window=inner, anchor='nw')
+        inner.columnconfigure(0, weight=0, minsize=72)
+        inner.columnconfigure(1, weight=0, minsize=260)
+        inner.columnconfigure(2, weight=1, minsize=460)
+
+        ttk.Label(inner, text='Run', font=('TkDefaultFont', 9, 'bold')).grid(
+            row=0, column=0, sticky='w', padx=(4, 8), pady=(2, 6))
+        ttk.Label(inner, text='Plot', font=('TkDefaultFont', 9, 'bold')).grid(
+            row=0, column=1, sticky='w', padx=(4, 8), pady=(2, 6))
+        ttk.Label(inner, text='Description', font=('TkDefaultFont', 9, 'bold')).grid(
+            row=0, column=2, sticky='w', padx=(4, 8), pady=(2, 6))
+
+        for row_index, spec in enumerate(self.specs, start=1):
+            key = str(spec['key'])
+            ttk.Checkbutton(inner, variable=self.plot_vars[key]).grid(
+                row=row_index, column=0, sticky='w', padx=(4, 8), pady=3)
+            ttk.Label(inner, text=str(spec.get('display_name', key))).grid(
+                row=row_index, column=1, sticky='w', padx=(4, 8), pady=3)
+            ttk.Label(
+                inner,
+                text=str(spec.get('short_description', '')),
+                foreground='#555',
+                wraplength=560,
+                justify='left').grid(
+                    row=row_index, column=2, sticky='ew', padx=(4, 8), pady=3)
+
+        def _on_inner_configure(_event=None):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+
+        def _on_canvas_configure(event=None):
+            if event is None:
+                return
+            canvas.itemconfig(window, width=max(event.width, inner.winfo_reqwidth()))
+
+        inner.bind('<Configure>', _on_inner_configure)
+        canvas.bind('<Configure>', _on_canvas_configure)
+
+    def get_selected_keys(self) -> list[str]:
+        return [
+            str(spec['key'])
+            for spec in self.specs
+            if self.plot_vars[str(spec['key'])].get()
+        ]
+
+    def set_selected_keys(self, selected_keys: list[str]):
+        selected = {str(name) for name in selected_keys}
+        for spec in self.specs:
+            key = str(spec['key'])
+            self.plot_vars[key].set(key in selected)
+
+    def select_all(self):
+        for variable in self.plot_vars.values():
+            variable.set(True)
+
+    def clear_all(self):
+        for variable in self.plot_vars.values():
+            variable.set(False)
+
+
+class ResultPlotSelectionPanel(ttk.LabelFrame):
+    def __init__(self, parent, title: str, on_load, on_apply):
+        super().__init__(parent, text=title)
+        self.on_load = on_load
+        self.on_apply = on_apply
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+
+        self.level_panels: dict[str, ResultPlotLevelPanel] = {}
+        level_titles = {
+            'comparison': 'Comparison',
+            'group': 'Group',
+            'run': 'Run',
+        }
+        for level in RESULT_PLOT_LEVELS:
+            panel = ResultPlotLevelPanel(
+                self.notebook,
+                level=level,
+                specs=get_result_plot_specs(level),
+                on_load=self.on_load,
+                on_apply=self.on_apply)
+            self.level_panels[level] = panel
+            self.notebook.add(panel, text=level_titles.get(level, level.title()))
+
+    def get_selected_map(self) -> dict[str, list[str]]:
+        return {
+            level: panel.get_selected_keys()
+            for level, panel in self.level_panels.items()
+        }
+
+    def set_selected_map(self, selected_map: dict[str, list[str]]):
+        normalized = parse_result_plots_to_do(selected_map)
+        for level, panel in self.level_panels.items():
+            panel.set_selected_keys(normalized.get(level, []))
 
 
 class PngPreviewWindow(tk.Toplevel):
@@ -1825,13 +2008,279 @@ class AnalysisPlotPage(ttk.Frame):
         self.instance_plot_browser = InstancePlotsBrowser(instance_browser_tab, self.app, self.master_plot_input_var)
         self.instance_plot_browser.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
+    def _load_analyzer_base_config(self) -> dict:
+        target_path = self.app.resolve_path(self.analyzer_config_var.get())
+        if hasattr(self, "analyzer_editor") and self.analyzer_editor.current_file == target_path:
+            if isinstance(self.analyzer_editor.config_data, dict):
+                return dict(self.analyzer_editor.config_data)
+
+        if not target_path.exists():
+            return {}
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as fh:
+                loaded = yaml.safe_load(fh) or {}
+        except Exception:
+            return {}
+
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _analyzer_group_sort_key(self, group_name: str) -> tuple[int, int, int, str]:
+        match = re.search(r"(?P<patients>\d+)pat_(?P<care_units>\d+)cu(?:_(?P<operators>\d+)op)?", group_name)
+        if match is None:
+            return (10**9, 10**9, 10**9, group_name)
+        operators = match.group("operators")
+        return (
+            int(match.group("patients")),
+            int(match.group("care_units")),
+            int(operators) if operators is not None else 10**9,
+            group_name,
+        )
+
+    def _result_plot_instance_sort_key(self, instance_name: str) -> tuple[int, str]:
+        match = re.search(r"inst_(\d+)", instance_name)
+        if match is None:
+            return (10**9, instance_name)
+        return (int(match.group(1)), instance_name)
+
+    def _scan_analyzer_available_filters(self) -> tuple[list[str], list[str]]:
+        input_root = self.app.resolve_path(self.analyzer_input_var.get())
+        if not input_root.exists():
+            return [], []
+
+        config_names: set[str] = set()
+        group_names: set[str] = set()
+        for entry in sorted(input_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name in {"analysis", "plots"}:
+                continue
+            tokens = entry.name.split("__")
+            if len(tokens) != 3:
+                continue
+            config_names.add(tokens[0])
+            group_names.add(tokens[1])
+
+        ordered_configs = self._order_result_plot_config_names(
+            list(config_names),
+            self.analyzer_editor.config_data if hasattr(self, "analyzer_editor") else None)
+        ordered_groups = sorted(group_names, key=self._analyzer_group_sort_key)
+        return ordered_configs, ordered_groups
+
+    def _get_available_analyzer_configs(self) -> list[str]:
+        return [self.analyzer_config_listbox.get(index) for index in range(self.analyzer_config_listbox.size())]
+
+    def _get_available_analyzer_groups(self) -> list[str]:
+        return [self.analyzer_group_listbox.get(index) for index in range(self.analyzer_group_listbox.size())]
+
+    def _get_selected_analyzer_configs(self) -> list[str]:
+        return [self.analyzer_config_listbox.get(index) for index in self.analyzer_config_listbox.curselection()]
+
+    def _get_selected_analyzer_groups(self) -> list[str]:
+        return [self.analyzer_group_listbox.get(index) for index in self.analyzer_group_listbox.curselection()]
+
+    def _set_selected_analyzer_filters(self, selected_configs: list[str], selected_groups: list[str]):
+        selected_config_set = {str(name) for name in selected_configs}
+        selected_group_set = {str(name) for name in selected_groups}
+
+        self.analyzer_config_listbox.selection_clear(0, tk.END)
+        for index, config_name in enumerate(self._get_available_analyzer_configs()):
+            if config_name in selected_config_set:
+                self.analyzer_config_listbox.selection_set(index)
+
+        self.analyzer_group_listbox.selection_clear(0, tk.END)
+        for index, group_name in enumerate(self._get_available_analyzer_groups()):
+            if group_name in selected_group_set:
+                self.analyzer_group_listbox.selection_set(index)
+
+        self._update_analyzer_filter_preview()
+
+    def _build_analyzer_runtime_config(self, require_selection: bool = False) -> dict | None:
+        base_config = self._load_analyzer_base_config()
+        available_configs = self._get_available_analyzer_configs()
+        available_groups = self._get_available_analyzer_groups()
+        selected_configs = self._get_selected_analyzer_configs()
+        selected_groups = self._get_selected_analyzer_groups()
+
+        if require_selection and len(available_configs) > 0 and len(selected_configs) == 0:
+            messagebox.showerror(
+                "Input error",
+                "Select at least one test/config for the analyzer, or use 'Select all'.")
+            return None
+        if require_selection and len(available_groups) > 0 and len(selected_groups) == 0:
+            messagebox.showerror(
+                "Input error",
+                "Select at least one instance group for the analyzer, or use 'Select all'.")
+            return None
+
+        effective_configs = ['all'] if len(available_configs) == 0 or len(selected_configs) == len(available_configs) else selected_configs
+        effective_groups = ['all'] if len(available_groups) == 0 or len(selected_groups) == len(available_groups) else selected_groups
+
+        base_config.pop('analysis_output_subdir', None)
+        base_config['configs_to_do'] = effective_configs
+        base_config['groups_to_do'] = effective_groups
+        base_config.setdefault('instances_to_do', ['all'])
+        return base_config
+
+    def _refresh_analyzer_filter_candidates(
+            self,
+            selected_configs: list[str] | None = None,
+            selected_groups: list[str] | None = None):
+        available_configs, available_groups = self._scan_analyzer_available_filters()
+
+        if selected_configs is None:
+            selected_configs = self._get_selected_analyzer_configs()
+        if selected_groups is None:
+            selected_groups = self._get_selected_analyzer_groups()
+
+        ordered_configs = self._order_result_plot_config_names(
+            list({*available_configs, *[str(name) for name in selected_configs]}),
+            self.analyzer_editor.config_data if hasattr(self, "analyzer_editor") else None)
+        ordered_groups = sorted(
+            {*(str(name) for name in available_groups), *(str(name) for name in selected_groups)},
+            key=self._analyzer_group_sort_key)
+
+        self.analyzer_config_listbox.delete(0, tk.END)
+        for config_name in ordered_configs:
+            self.analyzer_config_listbox.insert(tk.END, config_name)
+
+        self.analyzer_group_listbox.delete(0, tk.END)
+        for group_name in ordered_groups:
+            self.analyzer_group_listbox.insert(tk.END, group_name)
+
+        if len(ordered_configs) > 0 and len(selected_configs) == 0:
+            selected_configs = ordered_configs
+        if len(ordered_groups) > 0 and len(selected_groups) == 0:
+            selected_groups = ordered_groups
+
+        self._set_selected_analyzer_filters(
+            [str(name) for name in selected_configs],
+            [str(name) for name in selected_groups])
+
+    def _select_all_analyzer_configs(self):
+        self.analyzer_config_listbox.selection_set(0, tk.END)
+        self._update_analyzer_filter_preview()
+
+    def _clear_analyzer_configs(self):
+        self.analyzer_config_listbox.selection_clear(0, tk.END)
+        self._update_analyzer_filter_preview()
+
+    def _select_all_analyzer_groups(self):
+        self.analyzer_group_listbox.selection_set(0, tk.END)
+        self._update_analyzer_filter_preview()
+
+    def _clear_analyzer_groups(self):
+        self.analyzer_group_listbox.selection_clear(0, tk.END)
+        self._update_analyzer_filter_preview()
+
+    def _update_analyzer_filter_preview(self, _event=None):
+        input_root = self.app.resolve_path(self.analyzer_input_var.get())
+        available_configs = self._get_available_analyzer_configs()
+        available_groups = self._get_available_analyzer_groups()
+        selected_configs = self._get_selected_analyzer_configs()
+        selected_groups = self._get_selected_analyzer_groups()
+
+        if len(available_configs) == 0 and len(available_groups) == 0:
+            self.analyzer_filter_summary_var.set(
+                f"No experiment results detected in {input_root}")
+            return
+
+        if (len(available_configs) > 0 and len(selected_configs) == 0) or (len(available_groups) > 0 and len(selected_groups) == 0):
+            self.analyzer_filter_summary_var.set(
+                "No analyzer filter selected. Use 'Select all' to keep updating the centralized analysis.")
+            return
+
+        runtime_config = self._build_analyzer_runtime_config(require_selection=False)
+        if runtime_config is None:
+            self.analyzer_filter_summary_var.set("Analyzer filters unavailable.")
+            return
+
+        target_analysis_path = get_analysis_output_path(input_root, runtime_config)
+        selected_config_count = len(selected_configs) if len(available_configs) > 0 else 0
+        selected_group_count = len(selected_groups) if len(available_groups) > 0 else 0
+        default_global_path = input_root.joinpath("analysis")
+
+        if (
+                len(selected_configs) == len(available_configs)
+                and len(selected_groups) == len(available_groups)
+                and target_analysis_path == default_global_path):
+            self.analyzer_filter_summary_var.set(
+                f"Central analysis update on all tests/groups -> {target_analysis_path}")
+            return
+
+        self.analyzer_filter_summary_var.set(
+            f"Central analysis update on {selected_config_count} tests and {selected_group_count} groups -> {target_analysis_path}")
+
+    def _load_analyzer_selection(self):
+        if not self.analyzer_editor.load_file():
+            return
+        config = self.analyzer_editor.config_data
+
+        raw_configs = config.get("configs_to_do")
+        selected_configs = []
+        if isinstance(raw_configs, list):
+            normalized = [str(name).strip() for name in raw_configs if str(name).strip() != ""]
+            if len(normalized) > 0 and "all" not in {name.lower() for name in normalized}:
+                selected_configs = normalized
+
+        raw_groups = config.get("groups_to_do")
+        selected_groups = []
+        if isinstance(raw_groups, list):
+            normalized = [str(name).strip() for name in raw_groups if str(name).strip() != ""]
+            if len(normalized) > 0 and "all" not in {name.lower() for name in normalized}:
+                selected_groups = normalized
+
+        self._refresh_analyzer_filter_candidates(selected_configs=selected_configs, selected_groups=selected_groups)
+
+    def _apply_analyzer_selection(self) -> bool:
+        target_path = self.app.resolve_path(self.analyzer_config_var.get())
+        if not target_path.exists():
+            messagebox.showerror("File not found", f"Cannot find config file:\n{target_path}")
+            return False
+
+        runtime_config = self._build_analyzer_runtime_config(require_selection=True)
+        if runtime_config is None:
+            return False
+
+        try:
+            with open(target_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(runtime_config, fh, sort_keys=False, allow_unicode=False)
+        except Exception as exc:
+            messagebox.showerror("Save error", f"Failed to save file:\n{exc}")
+            return False
+
+        self.analyzer_editor.load_file()
+        self.app.set_status("Updated analyzer filter selection in YAML.")
+        return True
+
     def _build_analyzer_tab(self, parent):
-        controls = ttk.LabelFrame(parent, text="Run Analyzer")
-        controls.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
-        controls.columnconfigure(1, weight=1)
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
 
         self.analyzer_config_var = tk.StringVar(value="configs/analyzer_config.yaml")
         self.analyzer_input_var = tk.StringVar(value="results")
+        self.analyzer_overwrite_var = tk.BooleanVar(value=False)
+        self.analyzer_filter_summary_var = tk.StringVar(value="")
+
+        menu_tabs = ttk.Notebook(parent)
+        menu_tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 10))
+
+        run_tab = ttk.Frame(menu_tabs)
+        run_tab.columnconfigure(0, weight=1)
+        menu_tabs.add(run_tab, text="Run")
+
+        filter_tab = ttk.Frame(menu_tabs)
+        filter_tab.columnconfigure(0, weight=1)
+        menu_tabs.add(filter_tab, text="Batch filters")
+
+        advanced_tab = ttk.Frame(menu_tabs)
+        advanced_tab.columnconfigure(0, weight=1)
+        advanced_tab.rowconfigure(0, weight=1)
+        menu_tabs.add(advanced_tab, text="Advanced YAML")
+
+        controls = ttk.LabelFrame(run_tab, text="Run Analyzer")
+        controls.grid(row=0, column=0, sticky="ew")
+        controls.columnconfigure(1, weight=1)
 
         ttk.Label(controls, text="Config file").grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ttk.Entry(controls, textvariable=self.analyzer_config_var).grid(row=0, column=1, sticky="ew", pady=4)
@@ -1844,17 +2293,101 @@ class AnalysisPlotPage(ttk.Frame):
         ttk.Button(controls, text="Browse", command=lambda: self.app.browse_directory(self.analyzer_input_var)).grid(
             row=1, column=2, padx=6, pady=4)
 
+        ttk.Checkbutton(
+            controls,
+            text="Force full rebuild (disable incremental reuse)",
+            variable=self.analyzer_overwrite_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(
+            controls,
+            text="By default the analyzer reuses unchanged config/group/instance blocks from the centralized analysis store and recalculates only changed or new results.",
+            foreground="#555",
+            wraplength=760,
+            justify="left").grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
+
         actions = ttk.Frame(controls)
-        actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
+        actions.grid(row=3, column=2, sticky="e", padx=8, pady=6)
         ttk.Button(actions, text="Run analyzer", command=self._run_analyzer).pack(side="left")
         ttk.Button(actions, text="Open analysis folder", command=self._open_analysis_folder).pack(side="left", padx=(6, 0))
 
+        filter_controls = ttk.LabelFrame(filter_tab, text="Analyzer Selection")
+        filter_controls.grid(row=0, column=0, sticky="nsew")
+        filter_controls.columnconfigure(0, weight=1)
+        filter_controls.columnconfigure(1, weight=1)
+        filter_controls.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            filter_controls,
+            text="Select which tests and instance groups to refresh inside the centralized analysis under results/analysis. A narrow selection updates only that subset and preserves the rest of the canonical analysis tables.",
+            wraplength=860,
+            justify="left").grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 4))
+
+        top_actions = ttk.Frame(filter_controls)
+        top_actions.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+        ttk.Button(top_actions, text="Refresh from results", command=self._refresh_analyzer_filter_candidates).pack(side="left")
+
+        config_frame = ttk.LabelFrame(filter_controls, text="Tests / configs")
+        config_frame.grid(row=2, column=0, sticky="nsew", padx=(8, 4), pady=(0, 4))
+        config_frame.columnconfigure(0, weight=1)
+        config_frame.rowconfigure(1, weight=1)
+        config_actions = ttk.Frame(config_frame)
+        config_actions.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 4))
+        ttk.Button(config_actions, text="Select all", command=self._select_all_analyzer_configs).pack(side="left")
+        ttk.Button(config_actions, text="Clear", command=self._clear_analyzer_configs).pack(side="left", padx=(6, 0))
+        config_list_frame = ttk.Frame(config_frame)
+        config_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        config_list_frame.columnconfigure(0, weight=1)
+        config_list_frame.rowconfigure(0, weight=1)
+        self.analyzer_config_listbox = tk.Listbox(
+            config_list_frame,
+            selectmode="extended",
+            exportselection=False,
+            height=10)
+        self.analyzer_config_listbox.grid(row=0, column=0, sticky="nsew")
+        self.analyzer_config_listbox.bind("<<ListboxSelect>>", self._update_analyzer_filter_preview)
+        config_scroll = ttk.Scrollbar(config_list_frame, orient="vertical", command=self.analyzer_config_listbox.yview)
+        config_scroll.grid(row=0, column=1, sticky="ns")
+        self.analyzer_config_listbox.configure(yscrollcommand=config_scroll.set)
+
+        group_frame = ttk.LabelFrame(filter_controls, text="Instance groups")
+        group_frame.grid(row=2, column=1, sticky="nsew", padx=(4, 8), pady=(0, 4))
+        group_frame.columnconfigure(0, weight=1)
+        group_frame.rowconfigure(1, weight=1)
+        group_actions = ttk.Frame(group_frame)
+        group_actions.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 4))
+        ttk.Button(group_actions, text="Select all", command=self._select_all_analyzer_groups).pack(side="left")
+        ttk.Button(group_actions, text="Clear", command=self._clear_analyzer_groups).pack(side="left", padx=(6, 0))
+        group_list_frame = ttk.Frame(group_frame)
+        group_list_frame.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        group_list_frame.columnconfigure(0, weight=1)
+        group_list_frame.rowconfigure(0, weight=1)
+        self.analyzer_group_listbox = tk.Listbox(
+            group_list_frame,
+            selectmode="extended",
+            exportselection=False,
+            height=10)
+        self.analyzer_group_listbox.grid(row=0, column=0, sticky="nsew")
+        self.analyzer_group_listbox.bind("<<ListboxSelect>>", self._update_analyzer_filter_preview)
+        group_scroll = ttk.Scrollbar(group_list_frame, orient="vertical", command=self.analyzer_group_listbox.yview)
+        group_scroll.grid(row=0, column=1, sticky="ns")
+        self.analyzer_group_listbox.configure(yscrollcommand=group_scroll.set)
+
+        ttk.Label(
+            filter_controls,
+            textvariable=self.analyzer_filter_summary_var,
+            foreground="#555",
+            wraplength=860,
+            justify="left").grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+
         self.analyzer_editor = ConfigEditor(
-            parent,
+            advanced_tab,
             project_root=self.app.project_root,
             path_var=self.analyzer_config_var,
             status_cb=self.app.set_status)
-        self.analyzer_editor.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.analyzer_editor.grid(row=0, column=0, sticky="nsew")
+
+        self.analyzer_input_var.trace_add("write", lambda *_args: self._refresh_analyzer_filter_candidates())
+        self.after(0, self._load_analyzer_selection)
 
     def _persist_plot_selection(
             self,
@@ -1899,70 +2432,392 @@ class AnalysisPlotPage(ttk.Frame):
         self.app.set_status(status_message)
         return True
 
+    def _persist_result_plot_selection(
+            self,
+            path_var: tk.StringVar,
+            editor: ConfigEditor,
+            selection_panel: ResultPlotSelectionPanel,
+            extra_updates: dict | None = None,
+            status_message: str = "Updated result plot configuration.") -> bool:
+        target_path = self.app.resolve_path(path_var.get())
+        if not target_path.exists():
+            messagebox.showerror("File not found", f"Cannot find config file:\n{target_path}")
+            return False
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as fh:
+                loaded = yaml.safe_load(fh) or {}
+        except Exception as exc:
+            messagebox.showerror("YAML error", f"Failed to read YAML:\n{exc}")
+            return False
+
+        if not isinstance(loaded, dict):
+            messagebox.showerror("Unsupported format", "Top-level YAML content must be a mapping/object.")
+            return False
+
+        loaded["plots_to_do"] = serialize_result_plots_to_do(selection_panel.get_selected_map())
+        if extra_updates is not None:
+            for key, value in extra_updates.items():
+                if value is DELETE_FIELD:
+                    loaded.pop(key, None)
+                else:
+                    loaded[key] = value
+
+        try:
+            with open(target_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(loaded, fh, sort_keys=False, allow_unicode=False)
+        except Exception as exc:
+            messagebox.showerror("Save error", f"Failed to save file:\n{exc}")
+            return False
+
+        editor.load_file()
+        self.app.set_status(status_message)
+        return True
+
     def _collect_result_plot_extra_updates(self) -> dict | None:
         updates: dict[str, object] = {}
+        available_configs = self._get_result_plot_comparison_available_configs()
+        selected_configs = self._get_selected_result_plot_comparison_configs()
+        selected_result_plots = self.result_plot_selection.get_selected_map()
+        comparison_plots_selected = len(selected_result_plots.get('comparison', [])) > 0
+        row_split_priority = self._get_result_plot_row_split_priority()
 
-        order_text = self.result_plot_order_var.get().strip()
-        if order_text == "":
-            updates["experiment_group_comparison_config_order"] = DELETE_FIELD
-        else:
-            try:
-                parsed_order = yaml.safe_load(order_text)
-            except Exception as exc:
-                messagebox.showerror(
-                    "Input error",
-                    f"Invalid value for 'experiment_group_comparison_config_order':\n{exc}")
-                return None
-            if not isinstance(parsed_order, list):
-                messagebox.showerror(
-                    "Input error",
-                    "'experiment_group_comparison_config_order' must be a YAML list.")
-                return None
-            updates["experiment_group_comparison_config_order"] = [
-                str(item) for item in parsed_order if str(item).strip() != ""]
+        if comparison_plots_selected and len(available_configs) > 0 and len(selected_configs) == 0:
+            messagebox.showerror(
+                "Input error",
+                "Select at least one test/config to compare, or use 'Select all' to disable the filter.")
+            return None
 
-        aliases_text = self.result_plot_aliases_text.get("1.0", tk.END).strip()
-        if aliases_text == "":
-            updates["experiment_group_comparison_config_aliases"] = DELETE_FIELD
-        else:
-            try:
-                parsed_aliases = yaml.safe_load(aliases_text)
-            except Exception as exc:
-                messagebox.showerror(
-                    "Input error",
-                    f"Invalid value for 'experiment_group_comparison_config_aliases':\n{exc}")
-                return None
-            if not isinstance(parsed_aliases, dict):
-                messagebox.showerror(
-                    "Input error",
-                    "'experiment_group_comparison_config_aliases' must be a YAML mapping/object.")
-                return None
-            updates["experiment_group_comparison_config_aliases"] = {
-                str(key): str(value) for key, value in parsed_aliases.items()
-            }
+        if comparison_plots_selected:
+            if len(available_configs) == 0 or len(selected_configs) == len(available_configs):
+                updates["experiment_group_comparison_configs_to_do"] = DELETE_FIELD
+                updates["experiment_group_comparison_output_subdir"] = DELETE_FIELD
+            else:
+                updates["experiment_group_comparison_configs_to_do"] = selected_configs
+                updates["experiment_group_comparison_output_subdir"] = (
+                    f"comparisons/{self._build_result_plot_comparison_slug(selected_configs)}"
+                )
 
+            if len(row_split_priority) == 0:
+                updates["experiment_group_comparison_row_split_priority"] = DELETE_FIELD
+            else:
+                updates["experiment_group_comparison_row_split_priority"] = row_split_priority
+
+        selected_run_config = self.result_plot_run_config_var.get().strip()
+        selected_run_group = self.result_plot_run_group_var.get().strip()
+        selected_run_instance = self.result_plot_run_instance_var.get().strip()
+
+        updates["run_plot_configs_to_do"] = (
+            DELETE_FIELD if selected_run_config in {"", "All"} else [selected_run_config]
+        )
+        updates["run_plot_groups_to_do"] = (
+            DELETE_FIELD if selected_run_group in {"", "All"} else [selected_run_group]
+        )
+        updates["run_plot_instances_to_do"] = (
+            DELETE_FIELD if selected_run_instance in {"", "All"} else [selected_run_instance]
+        )
         return updates
 
-    def _load_result_plot_extras_from_config(self, config: dict):
-        raw_order = config.get("experiment_group_comparison_config_order")
-        if isinstance(raw_order, list):
-            self.result_plot_order_var.set(dump_inline_yaml(raw_order))
-        else:
-            self.result_plot_order_var.set("")
+    def _get_result_plot_row_split_priority(self) -> list[str]:
+        ordered_values = [
+            self.result_plot_row_split_var_1.get(),
+            self.result_plot_row_split_var_2.get(),
+            self.result_plot_row_split_var_3.get(),
+        ]
+        resolved: list[str] = []
+        for label in ordered_values:
+            normalized = EXPERIMENT_COMPARISON_ROW_SPLIT_LABEL_TO_KEY.get(str(label), "")
+            if normalized == "" or normalized in resolved:
+                continue
+            resolved.append(normalized)
+        return resolved
 
-        self.result_plot_aliases_text.delete("1.0", tk.END)
-        raw_aliases = config.get("experiment_group_comparison_config_aliases")
-        if isinstance(raw_aliases, dict):
-            dumped = yaml.safe_dump(raw_aliases, sort_keys=False, allow_unicode=False).strip()
-            if dumped != "":
-                self.result_plot_aliases_text.insert(tk.END, dumped)
+    def _set_result_plot_row_split_priority(self, priority_values: list[str]):
+        labels = [
+            EXPERIMENT_COMPARISON_ROW_SPLIT_KEY_TO_LABEL.get(value, "None")
+            for value in priority_values
+        ]
+        labels += ["None"] * max(0, 3 - len(labels))
+        self.result_plot_row_split_var_1.set(labels[0])
+        self.result_plot_row_split_var_2.set(labels[1])
+        self.result_plot_row_split_var_3.set(labels[2])
+        self._update_result_plot_comparison_preview()
+
+    def _order_result_plot_config_names(self, config_names: list[str], config: dict | None = None) -> list[str]:
+        names = sorted({str(name) for name in config_names if str(name).strip() != ""})
+        if len(names) == 0:
+            return []
+
+        configured_order: list[str] = []
+        if isinstance(config, dict):
+            raw_order = config.get("experiment_group_comparison_config_order")
+            if isinstance(raw_order, list):
+                configured_order = [str(name) for name in raw_order if str(name).strip() != ""]
+
+        if len(configured_order) == 0:
+            return names
+
+        rank = {name: index for index, name in enumerate(configured_order)}
+        return sorted(names, key=lambda name: (rank.get(name, len(rank)), name))
+
+    def _scan_result_plot_available_configs(self) -> list[str]:
+        input_root = self.app.resolve_path(self.result_plotter_input_var.get())
+        if not input_root.exists():
+            return []
+
+        config_names: set[str] = set()
+        for entry in sorted(input_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name in {"analysis", "plots"}:
+                continue
+            tokens = entry.name.split("__")
+            if len(tokens) != 3:
+                continue
+            config_names.add(tokens[0])
+
+        return self._order_result_plot_config_names(
+            list(config_names),
+            self.result_plotter_editor.config_data if hasattr(self, "result_plotter_editor") else None)
+
+    def _get_result_plot_comparison_available_configs(self) -> list[str]:
+        return [self.result_plot_comparison_listbox.get(index) for index in range(self.result_plot_comparison_listbox.size())]
+
+    def _get_selected_result_plot_comparison_configs(self) -> list[str]:
+        return [self.result_plot_comparison_listbox.get(index) for index in self.result_plot_comparison_listbox.curselection()]
+
+    def _set_selected_result_plot_comparison_configs(self, selected_configs: list[str]):
+        selected_set = {str(name) for name in selected_configs}
+        self.result_plot_comparison_listbox.selection_clear(0, tk.END)
+        for index, config_name in enumerate(self._get_result_plot_comparison_available_configs()):
+            if config_name in selected_set:
+                self.result_plot_comparison_listbox.selection_set(index)
+        self._update_result_plot_comparison_preview()
+
+    def _build_result_plot_comparison_slug(self, selected_configs: list[str]) -> str:
+        normalized = [str(name).strip() for name in selected_configs if str(name).strip() != ""]
+        if len(normalized) == 0:
+            return "all_configs"
+        return "__".join(
+            re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "config"
+            for name in normalized)
+
+    def _refresh_result_plot_comparison_candidates(self, selected_configs: list[str] | None = None):
+        available_configs = self._scan_result_plot_available_configs()
+        if selected_configs is None:
+            selected_configs = self._get_selected_result_plot_comparison_configs()
+
+        ordered_names = self._order_result_plot_config_names(
+            list({*available_configs, *[str(name) for name in selected_configs]}),
+            self.result_plotter_editor.config_data if hasattr(self, "result_plotter_editor") else None)
+
+        self.result_plot_comparison_listbox.delete(0, tk.END)
+        for config_name in ordered_names:
+            self.result_plot_comparison_listbox.insert(tk.END, config_name)
+
+        if len(ordered_names) > 0:
+            normalized_selected = [str(name) for name in selected_configs]
+            if len(normalized_selected) == 0:
+                normalized_selected = ordered_names
+            self._set_selected_result_plot_comparison_configs(normalized_selected)
+        else:
+            self._update_result_plot_comparison_preview()
+
+    def _scan_result_plot_run_entries(self) -> list[tuple[str, str, str]]:
+        input_root = self.app.resolve_path(self.result_plotter_input_var.get())
+        if not input_root.exists():
+            return []
+
+        entries: list[tuple[str, str, str]] = []
+        for entry in sorted(input_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name in {"analysis", "plots"}:
+                continue
+            tokens = entry.name.split("__")
+            if len(tokens) != 3:
+                continue
+            entries.append((tokens[0], tokens[1], tokens[2]))
+        return entries
+
+    def _refresh_result_plot_run_candidates(
+            self,
+            selected_config: str | None = None,
+            selected_group: str | None = None,
+            selected_instance: str | None = None):
+        entries = self._scan_result_plot_run_entries()
+        config_names = sorted({config_name for config_name, _, _ in entries})
+
+        config_values = ["All"] + config_names
+        self.result_plot_run_config_combo["values"] = config_values
+        if selected_config is None:
+            selected_config = self.result_plot_run_config_var.get().strip() or "All"
+        if selected_config not in config_values:
+            selected_config = "All"
+        self.result_plot_run_config_var.set(selected_config)
+
+        filtered_by_config = [
+            entry for entry in entries
+            if selected_config == "All" or entry[0] == selected_config
+        ]
+        group_names = sorted({group_name for _, group_name, _ in filtered_by_config})
+        group_values = ["All"] + group_names
+        self.result_plot_run_group_combo["values"] = group_values
+        if selected_group is None:
+            selected_group = self.result_plot_run_group_var.get().strip() or "All"
+        if selected_group not in group_values:
+            selected_group = "All"
+        self.result_plot_run_group_var.set(selected_group)
+
+        filtered_by_group = [
+            entry for entry in filtered_by_config
+            if selected_group == "All" or entry[1] == selected_group
+        ]
+        instance_names = sorted(
+            {instance_name for _, _, instance_name in filtered_by_group},
+            key=self._result_plot_instance_sort_key)
+        instance_values = ["All"] + instance_names
+        self.result_plot_run_instance_combo["values"] = instance_values
+        if selected_instance is None:
+            selected_instance = self.result_plot_run_instance_var.get().strip() or "All"
+        if selected_instance not in instance_values:
+            selected_instance = "All"
+        self.result_plot_run_instance_var.set(selected_instance)
+
+        self._update_result_plot_run_preview()
+
+    def _on_result_plot_run_config_change(self, _event=None):
+        self._refresh_result_plot_run_candidates(
+            selected_config=self.result_plot_run_config_var.get(),
+            selected_group="All",
+            selected_instance="All")
+
+    def _on_result_plot_run_group_change(self, _event=None):
+        self._refresh_result_plot_run_candidates(
+            selected_config=self.result_plot_run_config_var.get(),
+            selected_group=self.result_plot_run_group_var.get(),
+            selected_instance="All")
+
+    def _update_result_plot_run_preview(self, _event=None):
+        input_root = self.app.resolve_path(self.result_plotter_input_var.get())
+        entries = self._scan_result_plot_run_entries()
+        if len(entries) == 0:
+            self.result_plot_run_summary_var.set(f"No result runs detected in {input_root}")
+            return
+
+        selected_config = self.result_plot_run_config_var.get().strip() or "All"
+        selected_group = self.result_plot_run_group_var.get().strip() or "All"
+        selected_instance = self.result_plot_run_instance_var.get().strip() or "All"
+
+        filtered_entries = [
+            entry for entry in entries
+            if (selected_config == "All" or entry[0] == selected_config)
+            and (selected_group == "All" or entry[1] == selected_group)
+            and (selected_instance == "All" or entry[2] == selected_instance)
+        ]
+
+        if selected_config == "All" and selected_group == "All" and selected_instance == "All":
+            self.result_plot_run_summary_var.set(
+                "No run-specific filter set -> run-level plots use all runs allowed by the global YAML filters."
+            )
+            return
+
+        self.result_plot_run_summary_var.set(
+            f"Run-level plots restricted to {len(filtered_entries)} result directories "
+            f"(config={selected_config}, group={selected_group}, instance={selected_instance})."
+        )
+
+    def _select_all_result_plot_comparison_configs(self):
+        self.result_plot_comparison_listbox.selection_set(0, tk.END)
+        self._update_result_plot_comparison_preview()
+
+    def _clear_result_plot_comparison_configs(self):
+        self.result_plot_comparison_listbox.selection_clear(0, tk.END)
+        self._update_result_plot_comparison_preview()
+
+    def _update_result_plot_comparison_preview(self, _event=None):
+        input_root = self.app.resolve_path(self.result_plotter_input_var.get())
+        base_plots_path = input_root.joinpath("plots")
+        available_configs = self._get_result_plot_comparison_available_configs()
+        selected_configs = self._get_selected_result_plot_comparison_configs()
+        row_split_priority = self._get_result_plot_row_split_priority()
+        pretty_row_split = {
+            "patient_number": "patients",
+            "care_unit_number": "care units",
+            "test": "test",
+        }
+        row_split_preview = (
+            "single row"
+            if len(row_split_priority) == 0
+            else " > ".join(pretty_row_split.get(value, value) for value in row_split_priority)
+        )
+
+        if len(available_configs) == 0:
+            self.result_plot_comparison_summary_var.set(
+                f"No result configs detected in {input_root}")
+            return
+
+        if len(selected_configs) == 0:
+            self.result_plot_comparison_summary_var.set(
+                "No test selected. Select at least one config, or use 'Select all'.")
+            return
+
+        if len(selected_configs) == len(available_configs):
+            self.result_plot_comparison_summary_var.set(
+                f"All tests selected -> aggregate comparison plots stay in {base_plots_path} | row split: {row_split_preview}")
+            return
+
+        target_path = base_plots_path.joinpath(
+            "comparisons",
+            self._build_result_plot_comparison_slug(selected_configs))
+        self.result_plot_comparison_summary_var.set(
+            f"Filtered comparison on {len(selected_configs)} tests -> {target_path} | row split: {row_split_preview}")
+
+    def _load_result_plot_extras_from_config(self, config: dict):
+        raw_configs = config.get("experiment_group_comparison_configs_to_do")
+        selected_configs = []
+        if isinstance(raw_configs, list):
+            normalized = [str(name).strip() for name in raw_configs if str(name).strip() != ""]
+            if len(normalized) > 0 and "all" not in {name.lower() for name in normalized}:
+                selected_configs = normalized
+        raw_row_split_priority = config.get("experiment_group_comparison_row_split_priority")
+        row_split_priority = []
+        if isinstance(raw_row_split_priority, list):
+            row_split_priority = [str(value).strip() for value in raw_row_split_priority if str(value).strip() != ""]
+        self._set_result_plot_row_split_priority(row_split_priority)
+        self._refresh_result_plot_comparison_candidates(selected_configs=selected_configs)
+
+        raw_run_configs = config.get("run_plot_configs_to_do")
+        selected_run_config = "All"
+        if isinstance(raw_run_configs, list):
+            normalized = [str(value).strip() for value in raw_run_configs if str(value).strip() != ""]
+            if len(normalized) > 0 and "all" not in {value.lower() for value in normalized}:
+                selected_run_config = normalized[0]
+
+        raw_run_groups = config.get("run_plot_groups_to_do")
+        selected_run_group = "All"
+        if isinstance(raw_run_groups, list):
+            normalized = [str(value).strip() for value in raw_run_groups if str(value).strip() != ""]
+            if len(normalized) > 0 and "all" not in {value.lower() for value in normalized}:
+                selected_run_group = normalized[0]
+
+        raw_run_instances = config.get("run_plot_instances_to_do")
+        selected_run_instance = "All"
+        if isinstance(raw_run_instances, list):
+            normalized = [str(value).strip() for value in raw_run_instances if str(value).strip() != ""]
+            if len(normalized) > 0 and "all" not in {value.lower() for value in normalized}:
+                selected_run_instance = normalized[0]
+
+        self._refresh_result_plot_run_candidates(
+            selected_config=selected_run_config,
+            selected_group=selected_run_group,
+            selected_instance=selected_run_instance)
 
     def _load_result_plot_selection(self):
         if not self.result_plotter_editor.load_file():
             return
         config = self.result_plotter_editor.config_data
-        plots_to_do = config.get("plots_to_do", [])
-        self.result_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+        self.result_plot_selection.set_selected_map(parse_result_plots_to_do(config.get("plots_to_do", {})))
         self._load_result_plot_extras_from_config(config)
 
     def _apply_result_plot_selection(self) -> bool:
@@ -1971,14 +2826,13 @@ class AnalysisPlotPage(ttk.Frame):
             if not self.result_plotter_editor.load_file():
                 return False
             config = self.result_plotter_editor.config_data
-            plots_to_do = config.get("plots_to_do", [])
-            self.result_plot_selection.set_selected(plots_to_do if isinstance(plots_to_do, list) else [])
+            self.result_plot_selection.set_selected_map(parse_result_plots_to_do(config.get("plots_to_do", {})))
             self._load_result_plot_extras_from_config(config)
 
         updates = self._collect_result_plot_extra_updates()
         if updates is None:
             return False
-        return self._persist_plot_selection(
+        return self._persist_result_plot_selection(
             self.result_plotter_config_var,
             self.result_plotter_editor,
             self.result_plot_selection,
@@ -2012,7 +2866,14 @@ class AnalysisPlotPage(ttk.Frame):
         self.plot_instance_input_var = tk.StringVar(value="")
         self.plot_instance_output_var = tk.StringVar(value="plots_single")
         self.plot_instance_iter_var = tk.IntVar(value=1)
-        self.result_plot_order_var = tk.StringVar(value="")
+        self.result_plot_comparison_summary_var = tk.StringVar(value="")
+        self.result_plot_row_split_var_1 = tk.StringVar(value="None")
+        self.result_plot_row_split_var_2 = tk.StringVar(value="None")
+        self.result_plot_row_split_var_3 = tk.StringVar(value="None")
+        self.result_plot_run_config_var = tk.StringVar(value="All")
+        self.result_plot_run_group_var = tk.StringVar(value="All")
+        self.result_plot_run_instance_var = tk.StringVar(value="All")
+        self.result_plot_run_summary_var = tk.StringVar(value="")
 
         menu_tabs = ttk.Notebook(parent)
         menu_tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 10))
@@ -2023,7 +2884,7 @@ class AnalysisPlotPage(ttk.Frame):
 
         single_tab = ttk.Frame(menu_tabs)
         single_tab.columnconfigure(0, weight=1)
-        menu_tabs.add(single_tab, text="Single instance")
+        menu_tabs.add(single_tab, text="Single iteration snapshot")
 
         advanced_tab = ttk.Frame(menu_tabs)
         advanced_tab.columnconfigure(0, weight=1)
@@ -2051,33 +2912,123 @@ class AnalysisPlotPage(ttk.Frame):
         all_actions.grid(row=2, column=2, sticky="e", padx=8, pady=(6, 2))
         ttk.Button(all_actions, text="Run plotter all", command=self._run_plotter_all).pack(side="left")
 
-        self.result_plot_selection = PlotSelectionPanel(
+        self.result_plot_selection = ResultPlotSelectionPanel(
             batch_controls,
             title="Batch plots to run",
-            plot_names=RESULT_PLOT_NAMES,
             on_load=self._load_result_plot_selection,
-            on_apply=self._apply_result_plot_selection,
-            columns=2)
+            on_apply=self._apply_result_plot_selection)
         self.result_plot_selection.grid(row=3, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
 
-        comparison_options = ttk.LabelFrame(batch_controls, text="Experiment Comparison Options")
-        comparison_options.grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        comparison_options.columnconfigure(1, weight=1)
-        comparison_options.rowconfigure(1, weight=1)
+        comparison_parent = self.result_plot_selection.level_panels['comparison']
+        comparison_parent.columnconfigure(1, weight=0, minsize=360)
+        comparison_options = ttk.LabelFrame(comparison_parent, text="Experiment Comparison Options")
+        comparison_options.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(0, 8), pady=(8, 8))
+        comparison_options.columnconfigure(0, weight=1)
+        comparison_options.rowconfigure(2, weight=1)
 
         ttk.Label(
             comparison_options,
-            text="Test order (YAML list)").grid(row=0, column=0, sticky="w", padx=8, pady=(6, 4))
-        ttk.Entry(comparison_options, textvariable=self.result_plot_order_var).grid(
-            row=0, column=1, sticky="ew", padx=(0, 8), pady=(6, 4))
+            text="Select the tests/configs to include in the experiment comparison plots. "
+                 "Order and aliases stay editable only in Advanced YAML.").grid(
+                    row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+
+        comparison_actions = ttk.Frame(comparison_options)
+        comparison_actions.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 6))
+        ttk.Button(comparison_actions, text="Refresh from results", command=self._refresh_result_plot_comparison_candidates).pack(side="left")
+        ttk.Button(comparison_actions, text="Select all", command=self._select_all_result_plot_comparison_configs).pack(side="left", padx=(6, 0))
+        ttk.Button(comparison_actions, text="Clear", command=self._clear_result_plot_comparison_configs).pack(side="left", padx=(6, 0))
+
+        ttk.Label(comparison_options, text="Row split priority").grid(
+            row=2, column=0, sticky="w", padx=8, pady=(0, 4))
+        split_frame = ttk.Frame(comparison_options)
+        split_frame.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 6))
+        split_labels = list(EXPERIMENT_COMPARISON_ROW_SPLIT_LABEL_TO_KEY.keys())
+        for variable in [
+                self.result_plot_row_split_var_1,
+                self.result_plot_row_split_var_2,
+                self.result_plot_row_split_var_3]:
+            combo = ttk.Combobox(
+                split_frame,
+                state="readonly",
+                width=12,
+                values=split_labels,
+                textvariable=variable)
+            combo.pack(side="left", padx=(0, 4))
+            combo.bind("<<ComboboxSelected>>", self._update_result_plot_comparison_preview)
+
+        comparison_list_frame = ttk.Frame(comparison_options)
+        comparison_list_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        comparison_list_frame.columnconfigure(0, weight=1)
+        comparison_list_frame.rowconfigure(0, weight=1)
+        self.result_plot_comparison_listbox = tk.Listbox(
+            comparison_list_frame,
+            selectmode="extended",
+            exportselection=False,
+            height=10)
+        self.result_plot_comparison_listbox.grid(row=0, column=0, sticky="nsew")
+        self.result_plot_comparison_listbox.bind("<<ListboxSelect>>", self._update_result_plot_comparison_preview)
+        comparison_scroll = ttk.Scrollbar(comparison_list_frame, orient="vertical", command=self.result_plot_comparison_listbox.yview)
+        comparison_scroll.grid(row=0, column=1, sticky="ns")
+        self.result_plot_comparison_listbox.configure(yscrollcommand=comparison_scroll.set)
 
         ttk.Label(
             comparison_options,
-            text="Test aliases (YAML mapping)").grid(row=1, column=0, sticky="nw", padx=8, pady=(0, 6))
-        self.result_plot_aliases_text = ScrolledText(comparison_options, wrap="none", height=5)
-        self.result_plot_aliases_text.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 6))
+            textvariable=self.result_plot_comparison_summary_var,
+            foreground="#555",
+            wraplength=340,
+            justify="left").grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
 
-        single_controls = ttk.LabelFrame(single_tab, text="Single-instance Plotter")
+        run_parent = self.result_plot_selection.level_panels['run']
+        run_parent.columnconfigure(1, weight=0, minsize=320)
+        run_options = ttk.LabelFrame(run_parent, text="Run Plot Filters")
+        run_options.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(0, 8), pady=(8, 8))
+        run_options.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            run_options,
+            text="Optional selector for run-level plots only. Leave all fields on 'All' to process every run allowed by the global YAML filters."
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+
+        ttk.Button(
+            run_options,
+            text="Refresh from results",
+            command=self._refresh_result_plot_run_candidates).grid(row=1, column=0, sticky="w", padx=8, pady=(0, 6))
+
+        ttk.Label(run_options, text="Config").grid(row=2, column=0, sticky="w", padx=8, pady=(2, 2))
+        self.result_plot_run_config_combo = ttk.Combobox(
+            run_options,
+            textvariable=self.result_plot_run_config_var,
+            state="readonly",
+            width=28)
+        self.result_plot_run_config_combo.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self.result_plot_run_config_combo.bind("<<ComboboxSelected>>", self._on_result_plot_run_config_change)
+
+        ttk.Label(run_options, text="Group").grid(row=4, column=0, sticky="w", padx=8, pady=(2, 2))
+        self.result_plot_run_group_combo = ttk.Combobox(
+            run_options,
+            textvariable=self.result_plot_run_group_var,
+            state="readonly",
+            width=28)
+        self.result_plot_run_group_combo.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self.result_plot_run_group_combo.bind("<<ComboboxSelected>>", self._on_result_plot_run_group_change)
+
+        ttk.Label(run_options, text="Instance").grid(row=6, column=0, sticky="w", padx=8, pady=(2, 2))
+        self.result_plot_run_instance_combo = ttk.Combobox(
+            run_options,
+            textvariable=self.result_plot_run_instance_var,
+            state="readonly",
+            width=28)
+        self.result_plot_run_instance_combo.grid(row=7, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self.result_plot_run_instance_combo.bind("<<ComboboxSelected>>", self._update_result_plot_run_preview)
+
+        ttk.Label(
+            run_options,
+            textvariable=self.result_plot_run_summary_var,
+            foreground="#555",
+            wraplength=300,
+            justify="left").grid(row=8, column=0, sticky="ew", padx=8, pady=(2, 8))
+
+        single_controls = ttk.LabelFrame(single_tab, text="Single-iteration Snapshot Plotter")
         single_controls.grid(row=0, column=0, sticky="ew")
         single_controls.columnconfigure(1, weight=1)
 
@@ -2103,7 +3054,7 @@ class AnalysisPlotPage(ttk.Frame):
 
         inst_actions = ttk.Frame(single_controls)
         inst_actions.grid(row=2, column=2, sticky="e", padx=8, pady=6)
-        ttk.Button(inst_actions, text="Run plotter instance", command=self._run_plotter_instance).pack(side="left")
+        ttk.Button(inst_actions, text="Run iteration snapshot", command=self._run_plotter_instance).pack(side="left")
 
         self.result_plotter_editor = ConfigEditor(
             advanced_tab,
@@ -2111,6 +3062,8 @@ class AnalysisPlotPage(ttk.Frame):
             path_var=self.result_plotter_config_var,
             status_cb=self.app.set_status)
         self.result_plotter_editor.grid(row=0, column=0, sticky="nsew")
+        self.result_plotter_input_var.trace_add("write", lambda *_args: self._refresh_result_plot_comparison_candidates())
+        self.result_plotter_input_var.trace_add("write", lambda *_args: self._refresh_result_plot_run_candidates())
         self.after(0, self._load_result_plot_selection)
 
     def _build_instance_plotter_tab(self, parent):
@@ -2166,15 +3119,22 @@ class AnalysisPlotPage(ttk.Frame):
         self.after(0, self._load_instance_plot_selection)
 
     def _run_analyzer(self):
+        if not self._apply_analyzer_selection():
+            return
         cmd = [
             self.app.runner_python,
             "analyzer.py",
             "-c", str(self.app.resolve_path(self.analyzer_config_var.get())),
             "-i", str(self.app.resolve_path(self.analyzer_input_var.get()))]
+        if self.analyzer_overwrite_var.get():
+            cmd.append("--overwrite")
         self.app.start_command(cmd)
 
     def _open_analysis_folder(self):
-        analysis_dir = self.app.resolve_path(self.analyzer_input_var.get()).joinpath("analysis")
+        runtime_config = self._build_analyzer_runtime_config(require_selection=False)
+        analysis_dir = get_analysis_output_path(
+            self.app.resolve_path(self.analyzer_input_var.get()),
+            runtime_config or {})
         self.app.open_path(analysis_dir)
 
     def _run_plotter_all(self):

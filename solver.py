@@ -49,6 +49,7 @@ from src.checkers.check_cores import check_cores
 from src.milp_models.master_model import get_fat_master_model, get_slim_master_model
 from src.milp_models.master_model import get_result_from_fat_master_model, get_result_from_slim_master_model
 from src.milp_models.master_model import add_core_constraints_to_fat_master_model, add_core_constraints_to_slim_master_model
+from src.milp_models.master_model import add_optimality_cuts
 from src.milp_models.subproblem_model import get_fat_subproblem_model, get_slim_subproblem_model
 from src.milp_models.subproblem_model import get_result_from_fat_subproblem_model, get_result_from_slim_subproblem_model
 from src.milp_models.cache_model import get_cache_model, get_result_from_cache_model
@@ -866,6 +867,28 @@ def solve_instance(
         for day_name in day_names_with_rejected:
             print(f'{day_name} ', end='')
         print('] are not completely satisfied')
+
+        if 'use_optimality_cuts' in config['master']['additional_info']:
+            if config['structure_type'] in ['slim-fat', 'slim-slim']:
+                print(f'[iter {iteration_index}] [CUT] Starting optimality-cut update')
+                start = time.perf_counter()
+                optimality_cut_count_added = add_optimality_cuts(master_model, all_subproblem_result, master_instance) # type: ignore[arg-type]
+                end = time.perf_counter()
+                total_time_elapsed += end - start
+                optimality_cut_total_count = len(master_model.optimality_cuts) # type: ignore[attr-defined]
+                print(
+                    f'[iter {iteration_index}] [CUT] Added {optimality_cut_count_added} optimality cuts '
+                    f'({end - start:.04}s, total={optimality_cut_total_count})')
+                with open(iteration_path.joinpath('optimality_cut_stats.json'), 'w') as file:
+                    json.dump({
+                        'optimality_cut_count_added': optimality_cut_count_added,
+                        'optimality_cut_total_count': optimality_cut_total_count,
+                        'optimality_cut_time': end - start,
+                    }, file, indent=4)
+            else:
+                print(
+                    f'[iter {iteration_index}] [CUT] WARNING: use_optimality_cuts is enabled but '
+                    f'ignored for structure_type={config["structure_type"]}')
 
         ############################# INIZIO CORE ##############################
         

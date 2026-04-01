@@ -1,7 +1,7 @@
 import pyomo.environ as pyo
 from src.common.custom_types import MasterInstance, PatientName, ServiceName, DayName, TimeSlot
 from src.common.custom_types import SlimMasterResult, PatientService, PatientServiceWindow, FatMasterResult
-from src.common.custom_types import PatientServiceOperator, FatCore, SlimCore, Window, FatSubproblemResult
+from src.common.custom_types import PatientServiceOperator, FatCore, SlimCore, Window, FatSubproblemResult, SlimSubproblemResult
 
 def get_slim_master_model(instance: MasterInstance, additional_info: list[str]) -> pyo.ConcreteModel:
 
@@ -105,7 +105,7 @@ def get_slim_master_model(instance: MasterInstance, additional_info: list[str]) 
             tuple_list = [(p, s) for p, s, dd in model.do_index if d == dd]
             
             if len(tuple_list) == 0:
-                return model.day_solution_constraint[d] == 0
+                return model.day_solution_component[d] == 0
             
             return model.day_solution_component[d] == pyo.quicksum(
                 model.do[p, s, d] * instance.services[s].duration * instance.patients[p].priority for p, s in tuple_list)
@@ -157,7 +157,15 @@ def add_core_constraints_to_slim_master_model(model: pyo.ConcreteModel, cores: l
         
         model.cores.add(expr=expr <= len(core.components)) # type: ignore
 
-def add_optimality_cuts(model: pyo.ConcreteModel, subproblem_results: dict[DayName, FatSubproblemResult], instance: MasterInstance):
+def add_optimality_cuts(
+        model: pyo.ConcreteModel,
+        subproblem_results: dict[DayName, FatSubproblemResult | SlimSubproblemResult],
+        instance: MasterInstance) -> int:
+
+    if not hasattr(model, 'optimality_cuts') or not hasattr(model, 'day_solution_component'):
+        return 0
+
+    cut_count_added = 0
 
     for day_name, subproblem_result in subproblem_results.items():
 
@@ -167,27 +175,37 @@ def add_optimality_cuts(model: pyo.ConcreteModel, subproblem_results: dict[DayNa
             continue
 
         # Somma delle durate dei servizi svolti questo giorno
-        solution_value = sum(instance.services[request.service_name].duration for request in subproblem_result.scheduled)
+        solution_value = sum(
+            instance.services[request.service_name].duration * instance.patients[request.patient_name].priority
+            for request in subproblem_result.scheduled)
         
         # Lista di coppie (p,s) di ogni servizio chiesto questo giorno (anche se non è stato soddisfatto)
-        satisfied_patient_service_tuples = [(request.patient_name, request.service_name) for request in subproblem_result.scheduled]
-        satisfied_patient_service_tuples.extend([(request.patient_name, request.service_name) for request in subproblem_result.rejected])
+        satisfied_patient_service_tuples = {(request.patient_name, request.service_name) for request in subproblem_result.scheduled}
+        satisfied_patient_service_tuples.update((request.patient_name, request.service_name) for request in subproblem_result.rejected)
 
         # Lista di coppie (p,s) di ogni possibile richiesta che il master potrebbe chiedere in questo giorno
-        all_patient_service_tuples = []
+        all_patient_service_tuples: set[tuple[str, str]] = set()
         for patient_name, patient in instance.patients.items():
             for service_name, windows in patient.requests.items():
                 for window in windows:
                     if window.start <= day_name and window.end >= day_name:
-                        all_patient_service_tuples.append((patient_name, service_name))
+                        all_patient_service_tuples.add((patient_name, service_name))
+
+        if len(all_patient_service_tuples) == 0:
+            continue
 
         # Durata totale di tutte le richieste possibili questo giorno (usato per big M nel vincolo)
-        max_total_service_duration = sum(instance.services[service_name].duration for _, service_name in all_patient_service_tuples)
+        max_total_service_duration = sum(
+            instance.services[service_name].duration * instance.patients[patient_name].priority
+            for patient_name, service_name in all_patient_service_tuples)
 
         model.optimality_cuts.add(expr=
             model.day_solution_component[day_name] <= solution_value +
                                                     (max_total_service_duration - solution_value) * pyo.quicksum(
                                                     model.do[p, s, day_name] for p, s in all_patient_service_tuples if (p, s) not in satisfied_patient_service_tuples))
+        cut_count_added += 1
+
+    return cut_count_added
 
 
 def get_result_from_slim_master_model(model: pyo.ConcreteModel) -> SlimMasterResult:

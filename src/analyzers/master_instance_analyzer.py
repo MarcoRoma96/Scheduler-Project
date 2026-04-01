@@ -16,7 +16,11 @@ def analyze_master_instance(instance: MasterInstance) -> dict[str, int | float]:
     all_windows = [window for patient in instance.patients.values() for windows in patient.requests.values() for window in windows]
     total_window_number = len(all_windows)
     all_window_sizes = [window.end - window.start + 1 for window in all_windows]
-    total_time_slots_requested = sum(all_window_sizes)
+    total_window_time_slots = sum(all_window_sizes)
+    total_time_slots_requested = sum(
+        instance.services[service_name].duration * len(windows)
+        for patient in instance.patients.values()
+        for service_name, windows in patient.requests.items())
     
     patient_number = len(instance.patients)
     patient_request_numbers = [sum(len(windows) for windows in patient.requests.items()) for patient in instance.patients.values()]
@@ -66,7 +70,7 @@ def analyze_master_instance(instance: MasterInstance) -> dict[str, int | float]:
         
         'min_window_size': min(all_window_sizes),
         'max_window_size': max(all_window_sizes),
-        'average_window_size': total_time_slots_requested / total_window_number,
+        'average_window_size': total_window_time_slots / total_window_number,
         
         'min_patient_request_number': min(patient_request_numbers),
         'max_patient_request_number': max(patient_request_numbers),

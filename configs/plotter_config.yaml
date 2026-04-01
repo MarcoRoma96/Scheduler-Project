@@ -1,5 +1,25 @@
 plots_to_do:
-- experiment_group_comparison
+  comparison:
+  - comparison_box_lbbd_iterations
+  - comparison_box_avg_cores_per_iteration
+  - comparison_box_total_solving_time
+  - comparison_performance_profile_total_time
+  - comparison_box_final_gap_pct
+  - comparison_box_final_objective_value
+  - comparison_box_scheduled_duration_over_capacity_ratio
+  - comparison_box_scheduled_services_ratio
+  - comparison_bubble_duration_ratio_summary
+  - comparison_bubble_core_count_vs_core_size
+  - comparison_scatter_core_generation_progress
+  - comparison_bar_optimal_count_with_mean_gap
+  - comparison_bar_master_vs_subproblem_total_time
+  - comparison_bar_master_vs_subproblem_time_share_pct
+  - comparison_master_bar_and_subproblem_iteration_box
+  - comparison_master_timeout_feasible_and_mean_gap_boxplots
+  - comparison_master_same_day_request_grouping_boxplots
+  group:
+  - core_generation_profile_group
+  run: []
 experiment_group_comparison_config_order:
 - generalist
 - basic
@@ -19,3 +39,11 @@ experiment_group_comparison_config_aliases:
   pruned_pat_expansion: PRU+PAT_EXP
   pruned_pat_srv_expansion: PRU+PAT_SRV_EXP
   monolithic: MONO
+experiment_group_comparison_row_split_priority:
+- patient_number
+experiment_group_comparison_configs_to_do:
+- pruned
+- pruned_pat_expansion
+- pruned_pat_srv_expansion
+- pruned_pat_srv_day_expansion
+experiment_group_comparison_output_subdir: comparisons/pruned__pruned_pat_expansion__pruned_pat_srv_expansion__pruned_pat_srv_day_expansion

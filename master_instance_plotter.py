@@ -4,6 +4,10 @@ import json
 from textwrap import dedent
 
 import yaml
+import matplotlib
+
+# Force non-interactive rendering for batch plot generation.
+matplotlib.use('Agg')
 
 from src.common.custom_types import MasterInstance
 from src.common.file_load_and_dump import decode_master_instance

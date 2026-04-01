@@ -145,7 +145,7 @@ Funzionalita principali:
 - crea giorni, unità di cura, operatori
 - crea servizi (durata triangolare)
 - crea pazienti
-- riempie progressivamente finestre di richiesta fino al target di saturazione (`request_over_disponibility_ratio`)
+- genera richieste finche' la somma delle durate dei servizi richiesti raggiunge il target di saturazione (`request_over_disponibility_ratio`)
 - estrae l'ampiezza di ogni finestra con distribuzione triangolare tra `1` e `window_max_size`, con moda `ceil(window_max_size / 3)`
 - opzionalmente copia finestre tra servizi dello stesso paziente (`same_window_percentage`)
 - opzionalmente ripara le finestre dello stesso servizio dello stesso paziente per renderle disgiunte (`enforce_same_service_disjoint_windows`)
@@ -203,13 +203,16 @@ Risoluzione one-shot (senza loop iterativo), utile per baseline:
   - risultati sottoproblemi
   - file core
   - log Gurobi
-- salva Excel in `results/analysis/`
+- aggiorna l'analisi centralizzata in `results/analysis/`
+  - `instance_analysis.xlsx`
+  - `master_result_analysis.csv`
+  - `subproblem_result_analysis.csv`
 
 ### 4.5 Plotter (`plotter.py`)
 
-- modalità `all`: grafici batch usando risultati + Excel analysis
+- modalità `all`: grafici batch usando risultati + tabelle di analisi centralizzate
 - modalità `instance`: plot dettagliato di una singola istanza/iterazione
-- i plot aggregati (`result_value_vs_time`, `core_info`, `solving_times`, `solving_times_by_day`, `requests_per_patient`, `aggregate_best_solution_value`, `experiment_group_comparison`) richiedono prima l’esecuzione di `analyzer.py`
+- i plot batch basati sulle tabelle analitiche (`result_value_vs_time`, `core_info`, `solving_times`, `solving_times_by_day`, `requests_per_patient`, `aggregate_best_solution_value` e la famiglia `comparison/group` di `experiment_group_comparison`) richiedono prima l’esecuzione di `analyzer.py`
 
 In pratica il plotter copre due famiglie di grafici:
 
@@ -411,7 +414,7 @@ Sezioni annidate:
 Flag `master.additional_info`:
 
 - `minimize_hospital_accesses`: penalizza uso di molti giorni per paziente in obiettivo
-- `use_optimality_cuts`: aggiunge tagli di ottimalità (implementato per master slim)
+- `use_optimality_cuts`: aggiunge tagli di ottimalità per le strutture con master slim; il solver salva anche `optimality_cut_count_added`, `optimality_cut_total_count` e `optimality_cut_time` per iterazione in `master_result_analysis`
 
 ### `subproblem`
 
@@ -532,6 +535,7 @@ Note operative anche per il single-pass:
 | `do_subproblem_result_analysis` | `bool` | Estrae KPI istanze+risultati+log sottoproblema |
 
 Nota: se un file config vecchio non contiene i tre flag `do_*_analysis`, `analyzer.py` usa fallback `True` per tutti.
+Di default `analyzer.py` aggiorna un'unica analisi centralizzata in `results/analysis/` e riusa i blocchi gia' analizzati per le triple `(config, group, instance)` che non sono cambiate nella cartella risultati corrente. I filtri `configs_to_do` / `groups_to_do` / `instances_to_do` decidono quale sottoinsieme della base analitica centrale va sincronizzato; le righe fuori filtro restano intatte. Usa `--overwrite` se vuoi forzare il ricalcolo completo del solo sottoinsieme selezionato, mantenendo gli altri dati centrali.
 
 ### 5.7 Config plotter (`configs/plotter_config.yaml`)
 
@@ -540,37 +544,110 @@ Nota: se un file config vecchio non contiene i tre flag `do_*_analysis`, `analyz
 | `configs_to_do`, `configs_to_avoid` | `list[str]` | Filtri config |
 | `groups_to_do`, `groups_to_avoid` | `list[str]` | Filtri gruppo |
 | `instances_to_do`, `instances_to_avoid` | `list[str]` | Filtri istanza |
-| `plots_to_do` | `list[str]` | Elenco grafici da produrre |
+| `plots_to_do` | `dict[str, list[str]]` | Selezione dei plot batch per livello di aggregazione: `comparison`, `group`, `run` |
+| `run_plot_configs_to_do` | `list[str]` | Filtro opzionale solo per i plot `run`: restringe i run-level plots a specifiche config (`['all']` o assente = nessun filtro aggiuntivo) |
+| `run_plot_groups_to_do` | `list[str]` | Filtro opzionale solo per i plot `run`: restringe i run-level plots a specifici gruppi |
+| `run_plot_instances_to_do` | `list[str]` | Filtro opzionale solo per i plot `run`: restringe i run-level plots a una o piu' istanze |
+| `experiment_group_comparison_config_order` | `list[str]` | Ordine visuale dei test nei plot aggregati `experiment_group_comparison` |
+| `experiment_group_comparison_config_aliases` | `dict[str, str]` | Alias etichette dei test nei plot aggregati `experiment_group_comparison` |
+| `experiment_group_comparison_configs_to_do` | `list[str]` | Filtro opzionale solo per `experiment_group_comparison`: confronta solo i test indicati senza toccare gli altri plot batch |
+| `experiment_group_comparison_output_subdir` | `str` | Sotto-cartella relativa a `results/plots/` dove salvare la comparazione filtrata, utile per mantenere piu' confronti distinti |
+| `experiment_group_comparison_row_split_priority` | `list[str]` | Ordine opzionale di separazione verticale delle figure aggregate su piu' righe. Valori ammessi: `patient_number`, `care_unit_number`, `test`. Lista vuota = layout attuale a riga singola |
 
-Valori `plots_to_do`:
+Schema canonico di `plots_to_do`:
 
-- `best_instance`
-- `best_instance_subproblems`
-- `core_gantt`
-- `result_value_vs_time`
-- `core_info`
-- `solving_times`
-- `solving_times_by_day`
-- `requests_per_patient`
-- `equal_requests_between_iterations`
-- `aggregate_best_solution_value` (attualmente incompleto)
-- `experiment_group_comparison`
+```yaml
+plots_to_do:
+  comparison:
+    - comparison_box_lbbd_iterations
+    - comparison_scatter_core_generation_progress
+  group:
+    - bubble_duration_ratio_group
+    - core_generation_profile_group
+  run:
+    - result_value_vs_time
+    - solving_times
+    - core_info
+```
+
+Retrocompatibilita' in lettura:
+
+- il vecchio formato piatto, ad esempio
+  ```yaml
+  plots_to_do:
+    - result_value_vs_time
+    - core_info
+    - experiment_group_comparison
+  ```
+  e' ancora accettato da CLI e GUI;
+- se la GUI salva il file, lo normalizza sempre nel nuovo schema annidato;
+- nel formato legacy, `experiment_group_comparison` significa "tutti i plot `comparison` e `group` della famiglia aggregata".
+
+Plot disponibili per livello:
+
+- `comparison`
+  - `comparison_box_lbbd_iterations`
+  - `comparison_box_avg_cores_per_iteration`
+  - `comparison_box_total_solving_time`
+  - `comparison_performance_profile_total_time`
+  - `comparison_box_final_gap_pct`
+  - `comparison_box_final_objective_value`
+  - `comparison_box_scheduled_duration_over_capacity_ratio`
+  - `comparison_box_scheduled_services_ratio`
+  - `comparison_bubble_duration_ratio_summary`
+  - `comparison_bubble_core_count_vs_core_size`
+  - `comparison_scatter_core_generation_progress`
+  - `comparison_bar_optimal_count_with_mean_gap`
+  - `comparison_bar_master_vs_subproblem_total_time`
+  - `comparison_bar_master_vs_subproblem_time_share_pct`
+  - `comparison_master_bar_and_subproblem_iteration_box`
+  - `comparison_master_timeout_feasible_and_mean_gap_boxplots`
+  - `comparison_master_same_day_request_grouping_boxplots`
+- `group`
+  - `bubble_duration_ratio_group`
+  - `core_generation_profile_group`
+- `run`
+  - `best_instance`
+  - `best_instance_subproblems`
+  - `core_gantt`
+  - `result_value_vs_time`
+  - `core_info`
+  - `solving_times`
+  - `solving_times_by_day`
+  - `requests_per_patient`
+  - `equal_requests_between_iterations`
+
+Note pratiche:
+
+- `experiment_group_comparison_config_order` e `experiment_group_comparison_config_aliases` servono a controllare l'aspetto dei plot `comparison` e non filtrano i dati.
+- `experiment_group_comparison_configs_to_do` filtra solo i plot `comparison`, non i plot `group` o `run`.
+- `run_plot_configs_to_do`, `run_plot_groups_to_do`, `run_plot_instances_to_do` filtrano solo i plot `run`, non i plot `comparison` o `group`.
+- Se imposti anche `experiment_group_comparison_output_subdir`, i PNG della comparazione filtrata vengono scritti in `results/plots/<subdir>/...`, cosi' puoi rigenerare confronti diversi senza sovrascrivere i plot aggregati generali.
+- `experiment_group_comparison_row_split_priority` permette di spezzare tutte le figure aggregate su piu' righe. Esempi:
+  - `['patient_number']`: una riga per ogni numerosita' pazienti
+  - `['care_unit_number']`: una riga per ogni numerosita' care unit
+  - `['patient_number', 'test']`: una riga per ogni combinazione `pazienti x test`, ordinate secondo quella priorita'
+- Il plotter legge l'analisi centralizzata `results/analysis/` e filtra in memoria i dati necessari.
+- Nei plot aggregati, `total_solving_time` usa `run_total_time_elapsed` quando disponibile in `instance_analysis.xlsx`; in caso contrario mantiene il fallback storico `master + subproblem`.
 
 Significato dei plot disponibili:
+
+Riferimento esteso con formule, assi e interpretazione:
+- [docs/plot_reference.md](/home/marco/Universita/Dottorato/Studi/Progetto%20NCDs%20Agenda/Tesi%20Vancini/Scheduler-Project/docs/plot_reference.md)
 
 | Plot | Modalità | Input richiesti | Output | Cosa rappresenta | Stato |
 |---|---|---|---|---|---|
 | `best_instance` | `all` | `master_instance.json` + `best_final_result_so_far.json` | `plots/best_result/final_result.png` | Vista compatta giorno/care unit del miglior risultato finale trovato. Ogni rettangolo rappresenta una richiesta schedulata; il colore identifica la care unit. | Implementato |
 | `best_instance_subproblems` | `all` | `master_instance.json` + `best_final_result_so_far.json` | `plots/best_result/subproblem_day_<d>.png` | Gantt per ogni giorno del miglior risultato: asse `x` sui time slot, asse `y` sugli operatori, rettangoli pieni per richieste assegnate. | Implementato |
 | `core_gantt` | `all` | file core per iterazione + `subproblem_day_<d>_result.json` | `plots/cores/iter_<k>/core_<i>.png` | Gantt del singolo core: i `components` del core sono disegnati sul calendario operatori del giorno, la `reason` e' mostrata in overlay semi-trasparente. | Implementato |
-| `result_value_vs_time` | `all` | `analysis/master_result_analysis.xlsx` + `analysis/subproblem_result_analysis.xlsx` | `plots/result_value_vs_time.png` | Evoluzione del valore soluzione nel tempo cumulato di solve: linea master, linea final/subproblem, linea cache se presente. | Implementato |
-| `core_info` | `all` | `analysis/master_result_analysis.xlsx` | `plots/cores.png` | Evoluzione per iterazione delle proprieta' dei core: numero, dimensione, durata relativa e numero di care unit coinvolte, separate per tipo di core. | Implementato |
-| `solving_times` | `all` | `analysis/master_result_analysis.xlsx` + `analysis/subproblem_result_analysis.xlsx` | `plots/solving_times.png` | Tempi per iterazione di master, cache e sottoproblemi. Include anche variabilita' dei tempi dei singoli sottoproblemi tramite bande/error bar. | Implementato |
-| `solving_times_by_day` | `all` | `analysis/subproblem_result_analysis.xlsx` | `plots/solving_times_by_day.png` | Heatmap giorno x iterazione dei tempi di solve del sottoproblema; una `x` nera marca i giorni ancora con richieste rifiutate. | Implementato |
-| `requests_per_patient` | `all` | `analysis/master_result_analysis.xlsx` | `plots/requests_per_patient.png` | Pannello 2x2 sull'evoluzione delle richieste per paziente e delle risorse usate per paziente, confrontando master e final lungo le iterazioni. | Implementato, ma le metriche sottostanti ereditano i naming talvolta fuorvianti dei KPI analyzer |
+| `result_value_vs_time` | `all` | `analysis/master_result_analysis.csv` + `analysis/subproblem_result_analysis.csv` | `plots/result_value_vs_time.png` | Evoluzione del valore soluzione nel tempo cumulato di solve: linea master, linea final/subproblem, linea cache se presente. | Implementato |
+| `core_info` | `all` | `analysis/master_result_analysis.csv` | `plots/cores.png` | Evoluzione per iterazione delle proprieta' dei core: numero, dimensione, durata relativa e numero di care unit coinvolte, separate per tipo di core. | Implementato |
+| `solving_times` | `all` | `analysis/master_result_analysis.csv` + `analysis/subproblem_result_analysis.csv` | `plots/solving_times.png` | Tempi per iterazione di master, cache e sottoproblemi. Include anche variabilita' dei tempi dei singoli sottoproblemi tramite bande/error bar. | Implementato |
+| `solving_times_by_day` | `all` | `analysis/subproblem_result_analysis.csv` | `plots/solving_times_by_day.png` | Heatmap giorno x iterazione dei tempi di solve del sottoproblema; una `x` nera marca i giorni ancora con richieste rifiutate. | Implementato |
+| `requests_per_patient` | `all` | `analysis/master_result_analysis.csv` | `plots/requests_per_patient.png` | Pannello 2x2 sull'evoluzione delle richieste per paziente e delle risorse usate per paziente, confrontando master e final lungo le iterazioni. | Implementato, ma le metriche sottostanti ereditano i naming talvolta fuorvianti dei KPI analyzer |
 | `equal_requests_between_iterations` | `all` | `master_result.json` + `final_result.json` per iterazione | `plots/equal_requests_between_iterations.png` | Stabilita' inter-iterazione: confronta il numero totale di richieste e quante richieste restano uguali rispetto all'iterazione precedente, per master e final. | Implementato |
-| `aggregate_best_solution_value` | `all` | `analysis/master_result_analysis.xlsx` | previsto `plots/...` | Doveva aggregare i migliori valori soluzione su piu' istanze/configurazioni, ma il modulo oggi si ferma dopo una stampa intermedia e non salva il grafico. | Incompleto |
-| `experiment_group_comparison` | `all` | `analysis/master_result_analysis.xlsx` + `analysis/subproblem_result_analysis.xlsx` | `plots/comparison_*.png` (7 figure) | Cruscotto aggregato per confronto test/gruppi: boxplot su iterazioni LBBD, core medi/iterazione, tempo totale, gap finale%; istogrammi su numero ottimi + gap medio, tempi totali master/subproblem; figura combinata con istogramma del tempo medio master/iterazione e boxplot della distribuzione (per iterazione) dei tempi medi subproblem. | Implementato |
+| `aggregate_best_solution_value` | `all` | `analysis/master_result_analysis.csv` | previsto `plots/...` | Doveva aggregare i migliori valori soluzione su piu' istanze/configurazioni, ma il modulo oggi si ferma dopo una stampa intermedia e non salva il grafico. | Incompleto |
+| `experiment_group_comparison` | `all` | `analysis/master_result_analysis.csv` + `analysis/subproblem_result_analysis.csv` | `results/plots/comparison_*.png`, `results/plots/<subdir>/comparison_*.png`, `results/plots/groups/<config>__<group>/*.png` | Famiglia aggregata articolata in plot `comparison` globali e plot `group` per singolo `(config, group)`: boxplot su iterazioni LBBD, core medi/iterazione, tempo totale, gap finale%, objective finale, ratio di durata/servizi soddisfatti; performance profile sul tempo totale tracciato con pannelli disposti per `patient_number x care_unit_number`; istogrammi su ottimi e tempi MP/SP; bubble plot riassuntivi; scatter aggregato del numero di core lungo l'avanzamento normalizzato delle iterazioni; figure per gruppo con curve per istanza del numero di core per iterazione e boxplot della distribuzione giornaliera dei core per iterazione. | Implementato |
 
 Modalità `instance`:
 
@@ -659,8 +736,9 @@ single_pass_results/
 results/
 └── analysis/
     ├── instance_analysis.xlsx
-    ├── master_result_analysis.xlsx
-    └── subproblem_result_analysis.xlsx
+    ├── master_result_analysis.csv
+    ├── subproblem_result_analysis.csv
+    └── method_comparison_report.xlsx
 ```
 
 Note pratiche:
@@ -668,7 +746,23 @@ Note pratiche:
 - `instance_analysis.xlsx` contiene il riassunto finale per istanza. Qui trovi anche il `final_gap_*` globale della run:
   - per LBBD: ultimo upper bound del master vs miglior soluzione finale feasible trovata;
   - per monolitico: incumbent, bound e gap letti direttamente dal `solver_log.log` di Gurobi.
-- `master_result_analysis.xlsx` contiene invece le metriche per iterazione LBBD, incluse le colonne `lbbd_final_gap_*` calcolate iterazione per iterazione.
+- `master_result_analysis.csv` contiene invece le metriche per iterazione LBBD, incluse le colonne `lbbd_final_gap_*` calcolate iterazione per iterazione.
+- `subproblem_result_analysis.csv` contiene il dettaglio per giorno/sottoproblema. E' stato spostato in CSV per evitare il limite di righe dei fogli Excel sui dataset grandi.
+- `method_comparison_report.xlsx` e' prodotto dallo script [method_comparison_report.py](/home/marco/Universita/Dottorato/Studi/Progetto%20NCDs%20Agenda/Tesi%20Vancini/Scheduler-Project/method_comparison_report.py), che legge l'analisi centralizzata e costruisce un confronto statistico tra tutti i metodi presenti.
+  - output principali:
+    - `config_summary`: riepilogo globale per metodo
+    - `group_summary`: riepilogo per gruppo e metodo
+    - `pairwise_optimality`: confronti paired sull'ottimalita' con test esatto di McNemar
+    - `pairwise_continuous_all` / `pairwise_continuous_opt`: confronti paired su tempi, gap e objective con paired Student t-test e sign test
+    - `repeated_anova`: ANOVA a misure ripetute sulle istanze complete comuni a tutti i metodi
+  - uso tipico:
+    ```bash
+    python method_comparison_report.py -i results_experiment
+    ```
+  - filtro opzionale su un sottoinsieme di metodi:
+    ```bash
+    python method_comparison_report.py -i results_experiment --configs pruned irreducible_pruned pruned_pat_expansion
+    ```
 
 ### 6.5 Output plotter
 
@@ -749,8 +843,8 @@ Sotto, per ogni famiglia, e' indicato che cosa rappresenta l'elemento `x_i`. Qua
 - `window_size`: ampiezza della singola finestra di richiesta.
   Formula elementare: `window.end - window.start + 1`.
   Colonne: `min_window_size`, `max_window_size`, `average_window_size`.
-- `total_time_slots_requested`: somma delle ampiezze di tutte le finestre.
-  Formula: `sum window_size(w)`.
+- `total_time_slots_requested`: somma delle durate dei servizi richiesti nell'istanza master.
+  Formula: `sum service_duration(service_name) per ogni finestra/ richiesta del servizio`.
   Colonna: `total_time_slots_requested`.
 - `request_over_disponibility_ratio`: rapporto carico/capacita' nominale.
   Formula: `total_time_slots_requested / operator_total_duration`.
@@ -807,7 +901,7 @@ Sotto, per ogni famiglia, e' indicato che cosa rappresenta l'elemento `x_i`. Qua
   Formula: per ogni finestra `(p, s, w)` dell'istanza, se esiste almeno un giorno della finestra in cui il servizio `s` del paziente `p` e' schedulato, si aggiunge `duration(s) * priority(p)`.
   Nota: in questa analisi la penalizzazione `minimize_hospital_accesses` non viene applicata, perche' l'analyzer richiama `get_result_value(..., [], None)`.
   Colonna: `objective_value`.
-- `lbbd_final_gap_value`, `lbbd_final_gap_pct`: gap LBBD per iterazione, riportato in `master_result_analysis.xlsx`, tra upper bound del master dell'iterazione e valore feasible finale prodotto dai sottoproblemi nella stessa iterazione.
+- `lbbd_final_gap_value`, `lbbd_final_gap_pct`: gap LBBD per iterazione, riportato in `master_result_analysis.csv`, tra upper bound del master dell'iterazione e valore feasible finale prodotto dai sottoproblemi nella stessa iterazione.
   Formula:
   `lbbd_final_gap_value = max(0, master_upper_bound - final_objective_value)`
   `lbbd_final_gap_pct = 100 * lbbd_final_gap_value / abs(final_objective_value)`

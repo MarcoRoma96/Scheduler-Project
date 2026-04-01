@@ -13,15 +13,38 @@ groups_to_avoid: []
 instances_to_do: ['all']
 instances_to_avoid: []
 
-# Elenco dei nomi dei grafici da realizzare per ogni istanza
-plots_to_do: [
-    'best_instance', # computationally heavy!
-    'best_instance_subproblems', # computationally heavy!
-    'core_gantt', # computationally heavy!
-    'result_value_vs_time',
-    'core_info',
-    'solving_times',
-    'solving_times_by_day',
-    'requests_per_patient',
-    'equal_requests_between_iterations'
-]
+# Schema canonico nuovo per i result plots batch.
+# Retrocompatibilita' in lettura:
+#   plots_to_do: ['result_value_vs_time', 'core_info', 'experiment_group_comparison']
+# viene ancora accettato dal plotter e dalla GUI, ma al primo salvataggio viene
+# normalizzato nel formato annidato qui sotto.
+#
+# Livelli disponibili:
+# - comparison: confronto globale tra test/config e gruppi
+# - group: aggregazione sulle istanze di uno stesso (config, group)
+# - run: grafici della singola run/istanza
+#
+# Per i plot `comparison` puoi anche impostare:
+# experiment_group_comparison_configs_to_do: ['generalist', 'basic']
+# experiment_group_comparison_output_subdir: comparisons/generalist__basic
+# experiment_group_comparison_row_split_priority: ['patient_number', 'test']
+#
+# Per i plot `run` puoi anche restringere il sottoinsieme di run da processare:
+# run_plot_configs_to_do: ['generalist']
+# run_plot_groups_to_do: ['32pat_2cu_4op']
+# run_plot_instances_to_do: ['inst_00']
+plots_to_do:
+  # comparison:
+  #   - comparison_performance_profile_total_time
+  comparison: []
+  group: []
+  run:
+    - best_instance # computationally heavy!
+    - best_instance_subproblems # computationally heavy!
+    - core_gantt # computationally heavy!
+    - result_value_vs_time
+    - core_info
+    - solving_times
+    - solving_times_by_day
+    - requests_per_patient
+    - equal_requests_between_iterations
