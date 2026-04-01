@@ -10,7 +10,8 @@ def plot_result_value_vs_time(
     
     required_master_columns = [
         'config', 'group', 'instance', 'iteration',
-        'master_time', 'master_objective_value', 'cache_time', 'cache_objective_value', 'final_objective_value'
+        'master_time', 'master_objective_value', 'cache_time', 'cache_objective_value', 'final_objective_value',
+        'iteration_tracked_elapsed_time'
     ]
     # reindex+copy avoids fragmented frame warnings from repeated column inserts.
     master_result_df = master_result_df.reindex(columns=required_master_columns).copy()
@@ -20,7 +21,8 @@ def plot_result_value_vs_time(
             'master_objective_value',
             'cache_time',
             'cache_objective_value',
-            'final_objective_value']:
+            'final_objective_value',
+            'iteration_tracked_elapsed_time']:
         master_result_df[numeric_column] = pd.to_numeric(master_result_df[numeric_column], errors='coerce').fillna(0.0)
 
     required_subproblem_columns = ['config', 'group', 'instance', 'iteration', 'time']
@@ -40,7 +42,7 @@ def plot_result_value_vs_time(
         
         b = b[['iteration', 'time']]
         a = master_iterations[['iteration', 'master_time', 'master_objective_value',
-            'cache_time', 'cache_objective_value', 'final_objective_value']]
+            'cache_time', 'cache_objective_value', 'final_objective_value', 'iteration_tracked_elapsed_time']]
         
         b = b.rename(columns={'time': 'subproblem_time'})
         a = a.rename(columns={
@@ -48,7 +50,11 @@ def plot_result_value_vs_time(
             'cache_objective_value': 'cache_value',
             'final_objective_value': 'final_value'})
 
-        k = pd.merge(a, b.groupby('iteration').sum(), on='iteration').set_index('iteration').sort_index()
+        k = pd.merge(a, b.groupby('iteration').sum(), on='iteration', how='left').set_index('iteration').sort_index()
+        k['subproblem_time'] = pd.to_numeric(k['subproblem_time'], errors='coerce').fillna(0.0)
+        k['iteration_tracked_elapsed_time'] = pd.to_numeric(k['iteration_tracked_elapsed_time'], errors='coerce').fillna(
+            k['master_time'].fillna(0.0) + k['cache_time'].fillna(0.0) + k['subproblem_time'].fillna(0.0)
+        )
 
         cache_cumsum = k['cache_time'].cumsum()
         master_cumsum = k['master_time'].cumsum()
@@ -56,7 +62,7 @@ def plot_result_value_vs_time(
 
         cache_xs = master_cumsum + cache_cumsum.shift(1, fill_value=0) + subproblem_cumsum.shift(1, fill_value=0)
         master_xs = master_cumsum + cache_cumsum + subproblem_cumsum.shift(1, fill_value=0)
-        subproblem_xs = master_cumsum + cache_cumsum + subproblem_cumsum
+        subproblem_xs = k['iteration_tracked_elapsed_time'].cumsum()
 
         fig, ax = plt.subplots()
 

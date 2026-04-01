@@ -3174,6 +3174,10 @@ def plot_experiment_group_comparison(
                     usecols=usecols)
         except Exception as exc:
             print(f'WARNING: unable to read instance_analysis.xlsx for experiment comparison: {exc}')
+    if len(raw_instance_df) == 0 or 'run_total_time_elapsed' not in raw_instance_df.columns:
+        print(
+            "WARNING: 'run_total_time_elapsed' is unavailable in instance_analysis.xlsx; "
+            'comparison time plots will fall back to master+subproblem sums for legacy analyses.')
 
     if len(selected_comparison_plots) > 0:
         comparison_master_df = _filter_experiment_comparison_rows(master_result_df, config)

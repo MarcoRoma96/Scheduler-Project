@@ -110,13 +110,17 @@ Obiettivo del file:
   - `master`: `master_time`
   - `cache`: `cache_time`
   - `total subproblem`: `sum_d subproblem_time(iter, d)`
+  - `other tracked`: `max(0, iteration_tracked_elapsed_time - master_time - cache_time - SP_total)`
   - `subproblems` arancione: media per iterazione dei tempi dei singoli sottoproblemi, con errore derivato dai min/max giornalieri
 - Formule:
   - `SP_total(k) = sum_d time(k, d)`
   - `SP_mean(k) = mean_d time(k, d)`
+  - `Other(k) = max(0, iteration_tracked_elapsed_time(k) - master_time(k) - cache_time(k) - SP_total(k))`
 - Interpretazione:
   - distingue il costo complessivo della fase SP dal costo medio di un singolo giorno;
+  - `other tracked` raccoglie il resto dei passaggi intermedi tracciati nell'iterazione, inclusi per esempio build dei modelli, expansion dei core, post-processing, aggiunta dei vincoli e aggiornamento cache;
   - se `SP_total` cresce ma `SP_mean` resta basso, il costo e' dovuto soprattutto al numero di giorni/istanze risolti.
+  - Su analisi legacy prive di `iteration_timing_stats.json`, il plotter emette un warning e ripiega di fatto sul profilo storico `master + cache + subproblem`.
 
 ### `solving_times_by_day`
 - Output: `results/<config>__<group>__<instance>/plots/solving_times_by_day.png`
@@ -191,6 +195,7 @@ Notazione comune per le metriche per istanza:
 - `total_subproblem_time = sum_{k,d} subproblem_time(k,d)`
 - `total_solving_time = run_total_time_elapsed` se disponibile in `instance_analysis.xlsx`, altrimenti fallback a `total_master_time + total_subproblem_time`
 - `total_other_tracked_time = max(0, total_solving_time - total_master_time - total_subproblem_time)`
+- `wall_elapsed_seconds = run_wall_elapsed_seconds` se disponibile in `instance_analysis.xlsx`; resta separato da `total_solving_time` perche' quest'ultimo continua a essere il totale interno tracciato e scomponibile nei plot stacked MP/SP/Other.
 - `final_gap_pct = 100 * max(0, master_upper_bound_last - final_objective_value_last) / abs(final_objective_value_last)`
 - `scheduled_duration_over_capacity_ratio = final_total_scheduled_request_duration / (final_total_scheduled_request_duration + final_total_time_slots_remaining)`
 - `scheduled_number_over_total_ratio = final_total_scheduled_request_number / (final_total_scheduled_request_number + final_total_rejected_request_number)`
@@ -400,7 +405,8 @@ Nota su `final_gap_pct`:
   - `mean_inst(total_other_tracked_time)`
 - Interpretazione:
   - separa il tempo medio tracciato per istanza tra solve del master, solve dei sottoproblemi e resto dei processamenti tracciati;
-  - il segmento grigio include, ad esempio, cache selection solve e costruzione dei core che contribuiscono a `run_total_time_elapsed`.
+  - il segmento grigio include, ad esempio, cache selection solve, build dei modelli, costruzione/expansion dei core, post-processing, aggiunta vincoli al master e aggiornamento cache, cioe' tutto cio' che contribuisce a `run_total_time_elapsed` ma non ai soli solve MP/SP;
+  - su analisi legacy prive di `run_total_time_elapsed`, il plotter stampa un warning e ricade sul vecchio `master + subproblem`, quindi il segmento grigio puo' risultare nullo o sottostimato.
 
 ### `comparison_bar_master_vs_subproblem_time_share_pct.png`
 - Tipo: barre stacked 100%.

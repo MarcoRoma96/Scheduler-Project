@@ -134,6 +134,7 @@ def _get_required_master_columns(run_plots_to_do: list[str], include_experiment_
             'cache_time',
             'cache_objective_value',
             'final_objective_value',
+            'iteration_tracked_elapsed_time',
         })
 
     if 'core_info' in run_plots_to_do:
@@ -153,7 +154,7 @@ def _get_required_master_columns(run_plots_to_do: list[str], include_experiment_
             })
 
     if 'solving_times' in run_plots_to_do:
-        columns.update({'master_time', 'cache_time'})
+        columns.update({'master_time', 'cache_time', 'iteration_tracked_elapsed_time'})
 
     if 'requests_per_patient' in run_plots_to_do:
         columns.update({
@@ -569,6 +570,11 @@ if (
         'Subproblem result data' if subproblem_analysis_file is not None and subproblem_analysis_file.suffix.lower() == '.xlsx' else None,
         subproblem_required_columns)
     print('done')
+    if any(plot_name in selected_run_plots for plot_name in ['result_value_vs_time', 'solving_times']):
+        if 'iteration_tracked_elapsed_time' not in master_result_df.columns:
+            print(
+                "WARNING: 'iteration_tracked_elapsed_time' is missing from master_result_analysis; "
+                "run-level time plots will fall back to master+cache+subproblem totals for legacy analyses.")
 
 if include_experiment_family:
     print("Plotting 'experiment_group_comparison'")

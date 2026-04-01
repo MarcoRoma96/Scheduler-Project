@@ -9,7 +9,7 @@ def plot_solving_times(
         results_path: Path, config):
     
     master_result_df = master_result_df[['config', 'group', 'instance', 'iteration',
-        'master_time', 'cache_time']]
+        'master_time', 'cache_time', 'iteration_tracked_elapsed_time']]
     
     for key, master_iterations in master_result_df.groupby(['config', 'group', 'instance']):
 
@@ -21,9 +21,19 @@ def plot_solving_times(
             (subproblem_result_df['group'] == key[1]) &
             (subproblem_result_df['instance'] == key[2])]
         b: pd.DataFrame = b.rename(columns={'time': 'subproblem_time'})
-        a = master_iterations[['iteration', 'master_time', 'cache_time']]
+        a = master_iterations[['iteration', 'master_time', 'cache_time', 'iteration_tracked_elapsed_time']]
 
-        k = pd.merge(a, b[['iteration', 'subproblem_time']].groupby('iteration').sum(), on='iteration').set_index('iteration').sort_index()
+        subproblem_total_by_iteration = b[['iteration', 'subproblem_time']].groupby('iteration').sum()
+        k = pd.merge(a, subproblem_total_by_iteration, on='iteration', how='left').set_index('iteration').sort_index()
+        k['subproblem_time'] = pd.to_numeric(k['subproblem_time'], errors='coerce').fillna(0.0)
+        k['iteration_tracked_elapsed_time'] = pd.to_numeric(k['iteration_tracked_elapsed_time'], errors='coerce').fillna(
+            k['master_time'].fillna(0.0) + k['cache_time'].fillna(0.0) + k['subproblem_time'].fillna(0.0))
+        k['other_tracked_time'] = (
+            k['iteration_tracked_elapsed_time'].fillna(0.0)
+            - k['master_time'].fillna(0.0)
+            - k['cache_time'].fillna(0.0)
+            - k['subproblem_time'].fillna(0.0)
+        ).clip(lower=0.0)
 
         fig, ax = plt.subplots()
 
@@ -33,6 +43,7 @@ def plot_solving_times(
         
         ax.plot(k.index, k['master_time'], color='blue', marker='o', markeredgecolor='white', label='master')
         ax.plot(k.index, k['subproblem_time'], color='green', marker='.', markeredgecolor='white', label='total subproblem')
+        ax.plot(k.index, k['other_tracked_time'], color='purple', marker='d', markeredgecolor='white', label='other tracked')
 
         cmin = b[['iteration', 'subproblem_time']].groupby('iteration').min()
         cmax = b[['iteration', 'subproblem_time']].groupby('iteration').max()

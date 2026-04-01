@@ -534,19 +534,21 @@ def _collect_instance_run_status_analysis(run_status_payload: dict) -> dict[str,
         return {}
 
     analysis: dict[str, str | int | float] = {}
-    for key in [
-            'status',
-            'stage',
-            'message',
-            'error_code',
-            'return_code',
-            'timestamp',
-            'stop_reason',
-            'stop_iteration',
-            'total_time_elapsed',
-            'last_master_status']:
-        if key in run_status_payload:
-            analysis[f'run_{key}'] = run_status_payload[key]
+    direct_keys = {
+        'status',
+        'stage',
+        'message',
+        'error_code',
+        'return_code',
+        'timestamp',
+        'stop_reason',
+        'stop_iteration',
+        'total_time_elapsed',
+        'last_master_status',
+    }
+    for key, value in run_status_payload.items():
+        if key in direct_keys or key.startswith('total_') or key.startswith('wall_'):
+            analysis[f'run_{key}'] = value
     return analysis
 
 def _classify_instance_final_status(
@@ -781,6 +783,9 @@ reused_directory_count = 0
 reanalyzed_directory_count = 0
 selected_directory_names_on_disk: set[str] = set()
 selected_scope_changed = not analysis_path.exists()
+legacy_missing_wall_timing_count = 0
+legacy_missing_iteration_timing_stats_count = 0
+legacy_missing_subproblem_timing_stats_count = 0
 
 # Iterazione di ogni cartella con i risultati
 for result_directory in input_path.iterdir():
@@ -877,6 +882,8 @@ for result_directory in input_path.iterdir():
     
     run_config = _read_run_config(result_directory)
     run_status_payload = _read_run_status(result_directory)
+    if len(run_status_payload) > 0 and 'wall_elapsed_seconds' not in run_status_payload:
+        legacy_missing_wall_timing_count += 1
     operator_total_duration = get_total_operator_duration(master_instance)
     # Analisi dell'istanza di input
     if config['do_instance_analysis']:
@@ -959,6 +966,15 @@ for result_directory in input_path.iterdir():
                 # risultato appena letto
                 for key, value in result_type_analysis.items():
                     result_analysis[f'{result_type}_{key}'] = value
+
+            iteration_timing_stats_path = iteration_path.joinpath('iteration_timing_stats.json')
+            if iteration_timing_stats_path.exists():
+                with open(iteration_timing_stats_path, 'r') as file:
+                    iteration_timing_stats = json.load(file)
+                for key, value in iteration_timing_stats.items():
+                    result_analysis[key] = value
+            else:
+                legacy_missing_iteration_timing_stats_count += 1
             
             # Eventuale lettura ed analisi dei file relativi ai core nella carella
             # dell'iterazione corrente
@@ -1037,6 +1053,14 @@ for result_directory in input_path.iterdir():
                 subproblem_log_path = iteration_path.joinpath(f'subproblem_day_{day_name}_log.log')
                 if subproblem_log_path.exists():
                     subproblem_result_analysys.update(analyze_log(subproblem_log_path))
+
+                subproblem_stats_path = iteration_path.joinpath(f'subproblem_day_{day_name}_stats.json')
+                if subproblem_stats_path.exists():
+                    with open(subproblem_stats_path, 'r') as file:
+                        subproblem_timing_stats = json.load(file)
+                    subproblem_result_analysys.update(subproblem_timing_stats)
+                else:
+                    legacy_missing_subproblem_timing_stats_count += 1
             
                 # Se almeno un risultato è stato letto ed analizzato
                 if len(subproblem_result_analysys) > 5:
@@ -1090,6 +1114,23 @@ if config['do_subproblem_result_analysis']:
 else:
     final_subproblem_df = pd.DataFrame()
 
+legacy_compatibility_warnings: list[str] = []
+if config['do_instance_analysis'] and len(final_instance_df) > 0 and 'run_wall_elapsed_seconds' not in final_instance_df.columns:
+    legacy_compatibility_warnings.append(
+        "WARNING: centralized instance_analysis does not contain 'run_wall_elapsed_seconds'; "
+        'wall-time columns remain unavailable for legacy runs until they are recomputed.'
+    )
+if config['do_master_result_analysis'] and len(final_master_df) > 0 and 'iteration_tracked_elapsed_time' not in final_master_df.columns:
+    legacy_compatibility_warnings.append(
+        "WARNING: centralized master_result_analysis does not contain 'iteration_tracked_elapsed_time'; "
+        'run-level time plots will fall back to master+cache+subproblem totals for legacy runs.'
+    )
+if config['do_subproblem_result_analysis'] and len(final_subproblem_df) > 0 and 'subproblem_model_build_time' not in final_subproblem_df.columns:
+    legacy_compatibility_warnings.append(
+        "WARNING: centralized subproblem_result_analysis does not contain the new per-day timing columns; "
+        'legacy runs will keep those fields empty until recomputed with the updated solver.'
+    )
+
 if (
         not analysis_path.exists()
         and len(selected_directory_names_on_disk) == 0
@@ -1101,6 +1142,8 @@ if (
     exit(0)
 
 if not selected_scope_changed:
+    for warning_message in legacy_compatibility_warnings:
+        print(warning_message)
     print('Central analysis already up to date for the selected scope. Nothing to rewrite.')
     print(
         'Analyzer incremental summary: '
@@ -1149,6 +1192,20 @@ _write_analysis_cache_manifest(analysis_path, final_cache_entries)
 
 end = time.perf_counter()
 print(f'done ({end - start:.04}s)')
+for warning_message in legacy_compatibility_warnings:
+    print(warning_message)
+if legacy_missing_wall_timing_count > 0:
+    print(
+        f'WARNING: {legacy_missing_wall_timing_count} selected run(s) do not expose wall-time metadata in run_status.json; '
+        'the new run_wall_* columns stay empty for those legacy results.')
+if config['do_master_result_analysis'] and legacy_missing_iteration_timing_stats_count > 0:
+    print(
+        f'WARNING: {legacy_missing_iteration_timing_stats_count} iteration(s) are missing iteration_timing_stats.json; '
+        'new per-iteration timing columns in master_result_analysis stay empty for those legacy results.')
+if config['do_subproblem_result_analysis'] and legacy_missing_subproblem_timing_stats_count > 0:
+    print(
+        f'WARNING: {legacy_missing_subproblem_timing_stats_count} subproblem day record(s) are missing *_stats.json timing files; '
+        'new per-day timing columns in subproblem_result_analysis stay empty for those legacy results.')
 if incremental_reuse_enabled:
     print(
         'Analyzer incremental summary: '

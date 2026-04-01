@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from collections import defaultdict
 import pyomo.environ as pyo
 from pathlib import Path
 import logging
@@ -105,6 +106,20 @@ def _get_solver_termination_status(result) -> str:
     return termination
 
 
+def _build_wall_metadata(start_epoch: float, start_perf_counter: float) -> dict[str, str | float]:
+    end_epoch = time.time()
+    end_perf_counter = time.perf_counter()
+    wall_elapsed_seconds = end_perf_counter - start_perf_counter
+    return {
+        'wall_start_timestamp': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_epoch)),
+        'wall_end_timestamp': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_epoch)),
+        'wall_start_epoch': start_epoch,
+        'wall_end_epoch': end_epoch,
+        'wall_elapsed_seconds': wall_elapsed_seconds,
+        'wall_minus_tracked_elapsed_seconds': wall_elapsed_seconds,
+    }
+
+
 def _build_worker_command(
         config_path: Path,
         input_path: Path,
@@ -142,6 +157,8 @@ def _run_instance_worker(
         solving_path: Path,
         group_config,
         verbose: bool) -> int:
+    worker_wall_start_epoch = time.time()
+    worker_wall_start_perf = time.perf_counter()
     worker_command = _build_worker_command(
         config_path,
         input_path,
@@ -166,6 +183,7 @@ def _run_instance_worker(
 
     message = describe_worker_returncode(result.returncode)
     if not solving_path.joinpath(RUN_STATUS_FILENAME).exists():
+        wall_metadata = _build_wall_metadata(worker_wall_start_epoch, worker_wall_start_perf)
         write_run_status(
             solving_path,
             status='failed',
@@ -175,6 +193,7 @@ def _run_instance_worker(
             message=message,
             return_code=result.returncode,
             stage='worker',
+            **wall_metadata,
         )
 
     print(f'[FAIL] {config_name} / {group_name} / {instance_name}: {message}')
@@ -182,6 +201,8 @@ def _run_instance_worker(
 
 
 def _run_worker_mode(args) -> int:
+    worker_wall_start_epoch = time.time()
+    worker_wall_start_perf = time.perf_counter()
     config_path = Path(args.config).resolve()
     instance_path = Path(args._worker_instance_path).resolve()
     solving_path = Path(args._worker_output_path).resolve()
@@ -206,6 +227,14 @@ def _run_worker_mode(args) -> int:
         'Worker mode',
     ]
 
+    def _get_wall_metadata(run_metadata: dict[str, str | int | float | None] | None = None):
+        wall_metadata = _build_wall_metadata(worker_wall_start_epoch, worker_wall_start_perf)
+        tracked_elapsed = 0.0
+        if isinstance(run_metadata, dict):
+            tracked_elapsed = float(run_metadata.get('total_time_elapsed', 0.0) or 0.0)
+        wall_metadata['wall_minus_tracked_elapsed_seconds'] = wall_metadata['wall_elapsed_seconds'] - tracked_elapsed
+        return wall_metadata
+
     try:
         error_code, run_metadata = solve_instance(
             master_instance,
@@ -224,6 +253,7 @@ def _run_worker_mode(args) -> int:
                 error_code=0,
                 stage='completed',
                 **run_metadata,
+                **_get_wall_metadata(run_metadata),
             )
         else:
             write_run_status(
@@ -236,6 +266,7 @@ def _run_worker_mode(args) -> int:
                 error_code=error_code,
                 stage='solver',
                 **run_metadata,
+                **_get_wall_metadata(run_metadata),
             )
         return error_code
     except MemoryError as exc:
@@ -249,6 +280,7 @@ def _run_worker_mode(args) -> int:
             error_code=90,
             stage='memory',
             stop_reason='memory_limit',
+            **_get_wall_metadata(),
         )
         print(f'ERROR: MemoryError while solving {instance_name}')
         return 90
@@ -263,6 +295,7 @@ def _run_worker_mode(args) -> int:
             error_code=91,
             stage='exception',
             stop_reason='exception',
+            **_get_wall_metadata(),
         )
         traceback.print_exc()
         return 91
@@ -397,17 +430,90 @@ def solve_instance(
     best_subproblem_result_value_so_far = None
     total_time_elapsed = 0.0
     last_master_status: str | None = None
+    run_timing_totals: defaultdict[str, float] = defaultdict(float)
+    current_iteration_context: dict | None = None
+
+    def _record_elapsed(
+            phase_name: str,
+            elapsed: float,
+            *,
+            iteration_timing: defaultdict[str, float] | None = None,
+            day_timing: defaultdict[str, float] | None = None):
+        nonlocal total_time_elapsed
+        elapsed = float(elapsed)
+        total_time_elapsed += elapsed
+        run_timing_totals[phase_name] += elapsed
+        if iteration_timing is not None:
+            iteration_timing[phase_name] += elapsed
+            iteration_timing['iteration_tracked_elapsed_time'] += elapsed
+        if day_timing is not None:
+            day_timing[phase_name] += elapsed
+
+    def _dump_json_with_timing(
+            path: Path,
+            payload,
+            *,
+            phase_name: str,
+            iteration_timing: defaultdict[str, float] | None = None,
+            day_timing: defaultdict[str, float] | None = None):
+        start = time.perf_counter()
+        with open(path, 'w') as file:
+            json.dump(payload, file, indent=4)
+        _record_elapsed(
+            phase_name,
+            time.perf_counter() - start,
+            iteration_timing=iteration_timing,
+            day_timing=day_timing)
+
+    def _dump_yaml_with_timing(
+            path: Path,
+            payload,
+            *,
+            phase_name: str,
+            iteration_timing: defaultdict[str, float] | None = None):
+        start = time.perf_counter()
+        with open(path, 'w') as file:
+            yaml.dump(payload, file, indent=4, sort_keys=False)
+        _record_elapsed(
+            phase_name,
+            time.perf_counter() - start,
+            iteration_timing=iteration_timing)
+
+    def _write_iteration_timing_artifacts():
+        nonlocal current_iteration_context
+        if current_iteration_context is None:
+            return
+        if current_iteration_context['persisted']:
+            return
+
+        iteration_path: Path = current_iteration_context['iteration_path']
+        iteration_timing: defaultdict[str, float] = current_iteration_context['iteration_timing']
+        iteration_wall_elapsed_time = time.perf_counter() - current_iteration_context['iteration_wall_start_perf']
+        iteration_timing_payload = dict(iteration_timing)
+        iteration_timing_payload['iteration_wall_elapsed_time'] = iteration_wall_elapsed_time
+        with open(iteration_path.joinpath('iteration_timing_stats.json'), 'w') as file:
+            json.dump(iteration_timing_payload, file, indent=4)
+
+        for day_name, day_timing in current_iteration_context['subproblem_day_timings'].items():
+            with open(iteration_path.joinpath(f'subproblem_day_{day_name}_stats.json'), 'w') as file:
+                json.dump(dict(day_timing), file, indent=4)
+
+        current_iteration_context['persisted'] = True
 
     def _return(
             error_code: int,
             *,
             stop_reason: str | None = None,
             stop_iteration: int | None = None) -> tuple[int, dict[str, str | int | float | None]]:
+        _write_iteration_timing_artifacts()
+        run_timing_payload = {f'total_{key}': value for key, value in run_timing_totals.items()}
+        run_timing_payload['wall_minus_tracked_elapsed_seconds'] = None
         return error_code, {
             'stop_reason': stop_reason,
             'stop_iteration': stop_iteration,
             'total_time_elapsed': total_time_elapsed,
             'last_master_status': last_master_status,
+            **run_timing_payload,
         }
 
     solver_name = get_solver_name(config)
@@ -431,14 +537,20 @@ def solve_instance(
         config['cache'])
 
     # Copia dell'istanza master nella cartella dei risultati
-    with open(output_path.joinpath('master_instance.json'), 'w') as file:
-        json.dump(encode_master_instance(master_instance), file, indent=4)
+    _dump_json_with_timing(
+        output_path.joinpath('master_instance.json'),
+        encode_master_instance(master_instance),
+        phase_name='setup_io_time')
     
     # Copia della configurazione nella cartella dei risultati
-    with open(output_path.joinpath('config.yaml'), 'w') as file:
-        yaml.dump(config, file, indent=4, sort_keys=False)
+    _dump_yaml_with_timing(
+        output_path.joinpath('config.yaml'),
+        config,
+        phase_name='setup_io_time')
 
+    master_instance_check_start = time.perf_counter()
     errors = check_master_instance(master_instance)
+    _record_elapsed('master_instance_check_time', time.perf_counter() - master_instance_check_start)
     if len(errors) > 0:
         for error in errors:
             print(f'[MASTER] ERROR: {error}')
@@ -464,12 +576,16 @@ def solve_instance(
     else:
         master_model = get_slim_master_model(master_instance, config['master']['additional_info'])
     end = time.perf_counter()
+    _record_elapsed('master_model_build_time', end - start)
     print(f'done ({end - start:.04}s)')
 
     # Ottenimento delle relazioni di minore o uguale sui giorni, per espanderli
     if config['core_day_expansion']:
         print('[CORE] Start subsumption computation...', end='')
+        start = time.perf_counter()
         subsumptions = get_subsumptions(master_instance, config)
+        end = time.perf_counter()
+        _record_elapsed('subsumption_time', end - start)
         print('ended')
     else:
         subsumptions = None
@@ -485,6 +601,15 @@ def solve_instance(
         if iteration_path.exists():
             shutil.rmtree(iteration_path)
         iteration_path.mkdir()
+        iteration_timing: defaultdict[str, float] = defaultdict(float)
+        subproblem_day_timings: dict[DayName, defaultdict[str, float]] = {}
+        current_iteration_context = {
+            'iteration_path': iteration_path,
+            'iteration_timing': iteration_timing,
+            'subproblem_day_timings': subproblem_day_timings,
+            'iteration_wall_start_perf': time.perf_counter(),
+            'persisted': False,
+        }
 
         print(f'\n*************************** [START OF ITERATION {iteration_index:03}] ***************************')
         if len(iteration_summary_lines) > 0:
@@ -505,7 +630,7 @@ def solve_instance(
             solve_kwargs['warmstart'] = True
         master_solve_result = master_opt.solve(master_model, **solve_kwargs)
         end = time.perf_counter()
-        total_time_elapsed += end - start
+        _record_elapsed('master_solve_time', end - start, iteration_timing=iteration_timing)
         last_master_status = _get_solver_termination_status(master_solve_result)
         print(f'done ({end - start:.04}s)', end='')
         if end - start >= config['master']['time_limit']:
@@ -527,23 +652,40 @@ def solve_instance(
             master_result = get_result_from_fat_master_model(master_model)
         else:
             master_result = get_result_from_slim_master_model(master_model)
+        _record_elapsed(
+            'master_postprocess_time',
+            time.perf_counter() - end,
+            iteration_timing=iteration_timing)
 
         # Salvataggio dei risultati del master
-        with open(iteration_path.joinpath('master_result.json'), 'w') as file:
-            json.dump(encode_master_result(master_result), file, indent=4)
+        _dump_json_with_timing(
+            iteration_path.joinpath('master_result.json'),
+            encode_master_result(master_result),
+            phase_name='master_postprocess_time',
+            iteration_timing=iteration_timing)
 
+        check_start = time.perf_counter()
         if isinstance(master_result, FatMasterResult):
             errors = check_fat_master_result(master_instance, master_result)
         else:
             errors = check_slim_master_result(master_instance, master_result)
+        _record_elapsed(
+            'master_postprocess_time',
+            time.perf_counter() - check_start,
+            iteration_timing=iteration_timing)
         if len(errors) > 0:
             for error in errors:
                 print(f'[iter {iteration_index}] [MASTER] ERROR: {error}')
             return _return(2, stop_iteration=iteration_index)
         
+        master_value_eval_start = time.perf_counter()
         master_result_value = get_result_value(
             master_instance, master_result,
             config['master']['additional_info'], worst_case_day_number)
+        _record_elapsed(
+            'master_postprocess_time',
+            time.perf_counter() - master_value_eval_start,
+            iteration_timing=iteration_timing)
         print(f'[iter {iteration_index}] [MASTER] Optimistic master result value: {master_result_value}')
         
         ############################# INIZIO CACHE #############################
@@ -555,6 +697,7 @@ def solve_instance(
             start = time.perf_counter()
             cache_model = get_cache_model(master_instance, cache, best_cache_result_value_so_far)
             end = time.perf_counter()
+            _record_elapsed('cache_model_build_time', end - start, iteration_timing=iteration_timing)
             print(f'done ({end - start:.04}s) ', end='')
 
             # Risoluzione del modello MILP della cache
@@ -568,7 +711,7 @@ def solve_instance(
                 cache_solve_kwargs['tee'] = True
             cache_solve_result = cache_opt.solve(cache_model, **cache_solve_kwargs)
             end = time.perf_counter()
-            total_time_elapsed += end - start
+            _record_elapsed('cache_solve_time', end - start, iteration_timing=iteration_timing)
             print(f'done ({end - start:.04}s)', end='')
             if end - start >= config['cache']['time_limit']:
                 print(' [TIME LIMIT]')
@@ -585,28 +728,49 @@ def solve_instance(
                 stop_reason = 'memory_limit' if _get_solver_termination_status(cache_solve_result) == 'memory_limit' else None
                 return _return(3, stop_reason=stop_reason, stop_iteration=iteration_index)
 
+            cache_postprocess_start = time.perf_counter()
             matching = get_result_from_cache_model(cache_model)
             cache_final_result = exhume_result_from_matching(matching, output_path)
             fix_cache_final_result(master_instance, cache_final_result)
+            _record_elapsed(
+                'cache_postprocess_time',
+                time.perf_counter() - cache_postprocess_start,
+                iteration_timing=iteration_timing)
             
             # Salvataggio del matching della cache
-            with open(iteration_path.joinpath(f'cache_matching.json'), 'w') as file:
-                json.dump(encode_cache_matching(matching), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'cache_matching.json'),
+                encode_cache_matching(matching),
+                phase_name='cache_postprocess_time',
+                iteration_timing=iteration_timing)
             
             # Salvataggio dei risultati finali della cache
-            with open(iteration_path.joinpath(f'cache_final_result.json'), 'w') as file:
-                json.dump(encode_final_result(cache_final_result), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'cache_final_result.json'),
+                encode_final_result(cache_final_result),
+                phase_name='cache_postprocess_time',
+                iteration_timing=iteration_timing)
 
+            cache_check_start = time.perf_counter()
             errors = check_final_result(master_instance, cache_final_result)
+            _record_elapsed(
+                'cache_postprocess_time',
+                time.perf_counter() - cache_check_start,
+                iteration_timing=iteration_timing)
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CACHE] ERROR: {error}')
                 return _return(3, stop_iteration=iteration_index)
             
             # Eventuali salvataggi dei valori migliori finora incontrati
+            cache_value_eval_start = time.perf_counter()
             cache_final_result_value = get_result_value(
                 master_instance, cache_final_result,
                 config['master']['additional_info'], worst_case_day_number)
+            _record_elapsed(
+                'cache_postprocess_time',
+                time.perf_counter() - cache_value_eval_start,
+                iteration_timing=iteration_timing)
             print(f'[iter {iteration_index}] [CACHE] Cache objective function value: {pyo.value(cache_model.objective_function)}, true value: {cache_final_result_value}')
             
             if best_cache_result_value_so_far is None or cache_final_result_value > best_cache_result_value_so_far:
@@ -617,8 +781,11 @@ def solve_instance(
                 best_final_result_value_so_far = cache_final_result_value
                 
                 print(f'[iter {iteration_index}] Found new best solution of value {best_final_result_value_so_far}')
-                with open(output_path.joinpath(f'best_final_result_so_far.json'), 'w') as file:
-                    json.dump(encode_final_result(cache_final_result), file, indent=4)
+                _dump_json_with_timing(
+                    output_path.joinpath(f'best_final_result_so_far.json'),
+                    encode_final_result(cache_final_result),
+                    phase_name='cache_postprocess_time',
+                    iteration_timing=iteration_timing)
             
             # Se il risultato della cache è uguale a quello del master abbiamo
             # l'ottimo
@@ -631,11 +798,19 @@ def solve_instance(
                     stop_iteration=iteration_index)
         
         if config['use_true_cache'] and iteration_index > 1:
+            cache_lookup_start = time.perf_counter()
             previous_cache_day_iterations = get_previous_cache_day_iterations(cache, master_result)
+            _record_elapsed(
+                'true_cache_lookup_time',
+                time.perf_counter() - cache_lookup_start,
+                iteration_timing=iteration_timing)
             if len(previous_cache_day_iterations) > 0:
                 print(f'[iter {iteration_index}] [CACHE] Found {len(previous_cache_day_iterations)} days already solved in cache')
-                with open(iteration_path.joinpath(f'true_cache_finds.json'), 'w') as file:
-                    json.dump(previous_cache_day_iterations, file, indent=4)
+                _dump_json_with_timing(
+                    iteration_path.joinpath(f'true_cache_finds.json'),
+                    previous_cache_day_iterations,
+                    phase_name='true_cache_lookup_time',
+                    iteration_timing=iteration_timing)
             else: 
                 print(f'[iter {iteration_index}] [CACHE] No already solved days found in cache')
 
@@ -647,19 +822,31 @@ def solve_instance(
         all_subproblem_result:  dict[DayName, SlimSubproblemResult] | dict[DayName, FatSubproblemResult] = {}
         
         for day_name in master_result.scheduled.keys():
+            day_timing: defaultdict[str, float] = defaultdict(float)
+            subproblem_day_timings[day_name] = day_timing
             
             # Ottenimento dell'istanza del sottoproblema del giorno corrente
             subproblem_instance = get_subproblem_instance_from_master_result(master_instance, master_result, day_name)
             all_subproblem_instances[day_name] = subproblem_instance # type: ignore
 
             # Salvataggio del sottoproblema del giorno corrente
-            with open(iteration_path.joinpath(f'subproblem_day_{day_name}_instance.json'), 'w') as file:
-                json.dump(encode_subproblem_instance(subproblem_instance), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'subproblem_day_{day_name}_instance.json'),
+                encode_subproblem_instance(subproblem_instance),
+                phase_name='subproblem_postprocess_time',
+                iteration_timing=iteration_timing,
+                day_timing=day_timing)
 
+            subproblem_instance_check_start = time.perf_counter()
             if isinstance(subproblem_instance, FatSubproblemInstance):
                 errors = check_fat_subproblem_instance(subproblem_instance)
             else:
                 errors = check_slim_subproblem_instance(subproblem_instance)
+            _record_elapsed(
+                'subproblem_postprocess_time',
+                time.perf_counter() - subproblem_instance_check_start,
+                iteration_timing=iteration_timing,
+                day_timing=day_timing)
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [SUB] ERROR: {error}')
@@ -673,10 +860,18 @@ def solve_instance(
                 print(f'[iter {iteration_index}] [CACHE] Found day {day_name} already in cache (iter {iteration_name})')
                 
                 previous_iteration_path = output_path.joinpath(f'iter_{iteration_name}') # type: ignore
+                cache_materialization_start = time.perf_counter()
                 with open(previous_iteration_path.joinpath(f'subproblem_day_{day_name}_result.json'), 'r') as file:
                     subproblem_result = decode_subproblem_result(json.load(file))
                 
                 remove_requests_not_present(subproblem_result, master_result, day_name)
+                elapsed = time.perf_counter() - cache_materialization_start
+                _record_elapsed(
+                    'subproblem_postprocess_time',
+                    elapsed,
+                    iteration_timing=iteration_timing,
+                    day_timing=day_timing)
+                day_timing['from_true_cache'] = 1
             
             # Se il risultato non è già presente nella cache in una qualche
             # iterazione precedente, risolvi il sottoproblema normalmente
@@ -699,6 +894,11 @@ def solve_instance(
                     subproblem_model = get_slim_subproblem_model(subproblem_instance) # type: ignore
                 
                 end = time.perf_counter()
+                _record_elapsed(
+                    'subproblem_model_build_time',
+                    end - start,
+                    iteration_timing=iteration_timing,
+                    day_timing=day_timing)
                 print(f'done ({end - start:.04}s) ', end='')
 
                 # Risoluzione del modello MILP del giorno corrente
@@ -714,7 +914,11 @@ def solve_instance(
                     subproblem_model,
                     **subproblem_solve_kwargs)
                 end = time.perf_counter()
-                total_time_elapsed += end - start
+                _record_elapsed(
+                    'subproblem_solve_time',
+                    end - start,
+                    iteration_timing=iteration_timing,
+                    day_timing=day_timing)
                 print(f'done ({end - start:.04}s)', end='')
                 if end - start >= config['subproblem']['time_limit']:
                     print(' [TIME LIMIT]')
@@ -733,16 +937,34 @@ def solve_instance(
                     stop_reason = 'memory_limit' if _get_solver_termination_status(subproblem_solve_result) == 'memory_limit' else None
                     return _return(5, stop_reason=stop_reason, stop_iteration=iteration_index)
 
+                subproblem_postprocess_start = time.perf_counter()
                 if config['structure_type'] in ['slim-fat', 'fat-fat']:
                     subproblem_result = get_result_from_fat_subproblem_model(subproblem_model)
                 else:
                     subproblem_result = get_result_from_slim_subproblem_model(subproblem_model)
+                _record_elapsed(
+                    'subproblem_postprocess_time',
+                    time.perf_counter() - subproblem_postprocess_start,
+                    iteration_timing=iteration_timing,
+                    day_timing=day_timing)
+
+                day_timing['from_true_cache'] = 0
 
             # Salvataggio dei risultati del giorno corrente
-            with open(iteration_path.joinpath(f'subproblem_day_{day_name}_result.json'), 'w') as file:
-                json.dump(encode_subproblem_result(subproblem_result), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'subproblem_day_{day_name}_result.json'),
+                encode_subproblem_result(subproblem_result),
+                phase_name='subproblem_postprocess_time',
+                iteration_timing=iteration_timing,
+                day_timing=day_timing)
 
+            subproblem_check_start = time.perf_counter()
             errors = check_subproblem_result(subproblem_instance, subproblem_result)
+            _record_elapsed(
+                'subproblem_postprocess_time',
+                time.perf_counter() - subproblem_check_start,
+                iteration_timing=iteration_timing,
+                day_timing=day_timing)
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [SUB] ERROR: {error}')
@@ -755,13 +977,26 @@ def solve_instance(
         #################### COMPOSIZIONE RISULTATI FINALI #####################
 
         print(f'[iter {iteration_index}] Subproblem finished. Composing final result')
+        final_compose_start = time.perf_counter()
         final_result = compose_final_result(master_instance, master_result, all_subproblem_result)
+        _record_elapsed(
+            'final_result_compose_time',
+            time.perf_counter() - final_compose_start,
+            iteration_timing=iteration_timing)
 
         # Salvataggio su file dei risultati finali
-        with open(iteration_path.joinpath(f'final_result.json'), 'w') as file:
-            json.dump(encode_final_result(final_result), file, indent=4)
+        _dump_json_with_timing(
+            iteration_path.joinpath(f'final_result.json'),
+            encode_final_result(final_result),
+            phase_name='final_result_postprocess_time',
+            iteration_timing=iteration_timing)
 
+        final_check_start = time.perf_counter()
         errors = check_final_result(master_instance, final_result)
+        _record_elapsed(
+            'final_result_postprocess_time',
+            time.perf_counter() - final_check_start,
+            iteration_timing=iteration_timing)
         if len(errors) > 0:
             for error in errors:
                 print(f'[iter {iteration_index}] ERROR: {error}')
@@ -775,6 +1010,7 @@ def solve_instance(
         # 'corretti'), ma riducono le simmetrie
         if config['structure_type'] == 'fat-fat' and 'preemptive_forbidding' in config['subproblem']['additional_info']:
             print(f'[iter {iteration_index}] [CORE] Start of preemptive cores search')
+            preemptive_start = time.perf_counter()
 
             preemptive_cores: list[FatCore] = []
 
@@ -814,19 +1050,43 @@ def solve_instance(
                         components=master_scheduled_requests))
             
             if len(preemptive_cores) == 0:
+                _record_elapsed(
+                    'preemptive_core_time',
+                    time.perf_counter() - preemptive_start,
+                    iteration_timing=iteration_timing)
                 print(f'[iter {iteration_index}] [CORE] No preemptive core found')
             else:
 
                 # Salvataggio su file dei core preemptive
                 with open(iteration_path.joinpath(f'preemptive_cores.json'), 'w') as file:
-                        json.dump(encode_cores(preemptive_cores), file, indent=4) # type: ignore
+                    json.dump(encode_cores(preemptive_cores), file, indent=4) # type: ignore
 
+                errors = check_cores(master_instance, preemptive_cores)
+                if len(errors) > 0:
+                    for error in errors:
+                        print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
+                    return _return(7, stop_iteration=iteration_index)
+
+                add_start = time.perf_counter()
                 add_core_constraints_to_fat_master_model(master_model, preemptive_cores) # type: ignore
+                _record_elapsed(
+                    'core_constraint_add_time',
+                    time.perf_counter() - add_start,
+                    iteration_timing=iteration_timing)
+                _record_elapsed(
+                    'preemptive_core_time',
+                    add_start - preemptive_start,
+                    iteration_timing=iteration_timing)
                 print(f'[iter {iteration_index}] [CORE] Added {len(preemptive_cores)} preemptive cores')
 
+        final_value_eval_start = time.perf_counter()
         final_result_value = get_result_value(
             master_instance, final_result,
             config['master']['additional_info'], worst_case_day_number)
+        _record_elapsed(
+            'final_result_postprocess_time',
+            time.perf_counter() - final_value_eval_start,
+            iteration_timing=iteration_timing)
         print(f'[iter {iteration_index}] Combined subproblem result value: {final_result_value}')
 
         # Eventuale salvataggio dei valori migliori finora incontrati
@@ -837,8 +1097,11 @@ def solve_instance(
             best_final_result_value_so_far = final_result_value
 
             print(f'[iter {iteration_index}] Found new best solution of value {best_final_result_value_so_far}')
-            with open(output_path.joinpath(f'best_final_result_so_far.json'), 'w') as file:
-                json.dump(encode_final_result(final_result), file, indent=4)
+            _dump_json_with_timing(
+                output_path.joinpath(f'best_final_result_so_far.json'),
+                encode_final_result(final_result),
+                phase_name='final_result_postprocess_time',
+                iteration_timing=iteration_timing)
 
         # Se il risultato ottimistico del master è uguale a quello reale abbiamo l'ottimo
         if final_result_value >= master_result_value:
@@ -874,17 +1137,20 @@ def solve_instance(
                 start = time.perf_counter()
                 optimality_cut_count_added = add_optimality_cuts(master_model, all_subproblem_result, master_instance) # type: ignore[arg-type]
                 end = time.perf_counter()
-                total_time_elapsed += end - start
+                _record_elapsed('optimality_cut_time', end - start, iteration_timing=iteration_timing)
                 optimality_cut_total_count = len(master_model.optimality_cuts) # type: ignore[attr-defined]
                 print(
                     f'[iter {iteration_index}] [CUT] Added {optimality_cut_count_added} optimality cuts '
                     f'({end - start:.04}s, total={optimality_cut_total_count})')
-                with open(iteration_path.joinpath('optimality_cut_stats.json'), 'w') as file:
-                    json.dump({
+                _dump_json_with_timing(
+                    iteration_path.joinpath('optimality_cut_stats.json'),
+                    {
                         'optimality_cut_count_added': optimality_cut_count_added,
                         'optimality_cut_total_count': optimality_cut_total_count,
                         'optimality_cut_time': end - start,
-                    }, file, indent=4)
+                    },
+                    phase_name='optimality_cut_time',
+                    iteration_timing=iteration_timing)
             else:
                 print(
                     f'[iter {iteration_index}] [CUT] WARNING: use_optimality_cuts is enabled but '
@@ -922,13 +1188,18 @@ def solve_instance(
             start = time.perf_counter()
             cores = get_generalist_cores(all_subproblem_result)
             end = time.perf_counter()
-            total_time_elapsed += end - start
+            _record_elapsed('generalist_core_time', end - start, iteration_timing=iteration_timing)
             print(f'[iter {iteration_index}] [CORE] {len(cores)} \'generalist\' cores found ({end - start:.04}s)')
 
-            with open(iteration_path.joinpath(f'generalist_cores.json'), 'w') as file:
-                json.dump(encode_cores(cores), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'generalist_cores.json'),
+                encode_cores(cores),
+                phase_name='generalist_core_time',
+                iteration_timing=iteration_timing)
             
+            core_check_start = time.perf_counter()
             errors = check_cores(master_instance, cores)
+            _record_elapsed('generalist_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -941,13 +1212,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_basic_fat_cores(all_subproblem_result)
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('basic_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'basic\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'basic_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'basic_cores.json'),
+                        encode_cores(cores),
+                        phase_name='basic_core_time',
+                        iteration_timing=iteration_timing)
                     
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('basic_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -957,13 +1233,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_reduced_fat_cores(cores) # type: ignore
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('reduced_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'reduced\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'reduced_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'reduced_cores.json'),
+                        encode_cores(cores),
+                        phase_name='reduced_core_time',
+                        iteration_timing=iteration_timing)
                     
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('reduced_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -973,13 +1254,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_pruned_fat_cores(all_subproblem_instances, cores, config) # type: ignore
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('pruned_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'pruned\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'pruned_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'pruned_cores.json'),
+                        encode_cores(cores),
+                        phase_name='pruned_core_time',
+                        iteration_timing=iteration_timing)
                     
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('pruned_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -992,13 +1278,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_basic_slim_cores(all_subproblem_result) # type: ignore
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('basic_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'basic\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'basic_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'basic_cores.json'),
+                        encode_cores(cores),
+                        phase_name='basic_core_time',
+                        iteration_timing=iteration_timing)
 
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('basic_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -1008,13 +1299,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_reduced_slim_cores(master_instance.services, cores) # type: ignore
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('reduced_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'reduced\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'reduced_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'reduced_cores.json'),
+                        encode_cores(cores),
+                        phase_name='reduced_core_time',
+                        iteration_timing=iteration_timing)
                     
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('reduced_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -1024,13 +1320,18 @@ def solve_instance(
                     start = time.perf_counter()
                     cores = get_pruned_slim_cores(all_subproblem_result, all_subproblem_instances, cores, config) # type: ignore
                     end = time.perf_counter()
-                    total_time_elapsed += end - start
+                    _record_elapsed('pruned_core_time', end - start, iteration_timing=iteration_timing)
                     print(f'[iter {iteration_index}] [CORE] {len(cores)} \'pruned\' cores found ({end - start:.04}s)')
 
-                    with open(iteration_path.joinpath(f'pruned_cores.json'), 'w') as file:
-                        json.dump(encode_cores(cores), file, indent=4)
+                    _dump_json_with_timing(
+                        iteration_path.joinpath(f'pruned_cores.json'),
+                        encode_cores(cores),
+                        phase_name='pruned_core_time',
+                        iteration_timing=iteration_timing)
                     
+                    core_check_start = time.perf_counter()
                     errors = check_cores(master_instance, cores)
+                    _record_elapsed('pruned_core_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
                     if len(errors) > 0:
                         for error in errors:
                             print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
@@ -1041,7 +1342,10 @@ def solve_instance(
         # Espansione dei core
         if config['core_patient_expansion'] or config['core_service_expansion'] or config['core_operator_expansion'] or config['core_day_expansion']:
             print(f'[iter {iteration_index}] [CORE] Starting core expansion')
+            start = time.perf_counter()
             expanded_cores = expand_cores(cores, all_possible_master_requests, master_instance.services, config, subsumptions)
+            end = time.perf_counter()
+            _record_elapsed('core_expansion_time', end - start, iteration_timing=iteration_timing)
             print(f'[iter {iteration_index}] [CORE] End of core expansion. Found {len(expanded_cores)} cores from starting with {len(cores)} cores')
 
             # Se per qualche motivo l'espansione non ha prodotto il caso
@@ -1049,27 +1353,36 @@ def solve_instance(
             cores = aggregate_core_lists(cores, expanded_cores)
             print(f'[iter {iteration_index}] [CORE] {len(cores)} cores remaining after aggregate and duplicate removal')
 
-            with open(iteration_path.joinpath(f'expanded_cores.json'), 'w') as file:
-                json.dump(encode_cores(cores), file, indent=4)
+            _dump_json_with_timing(
+                iteration_path.joinpath(f'expanded_cores.json'),
+                encode_cores(cores),
+                phase_name='core_expansion_time',
+                iteration_timing=iteration_timing)
             
+            core_check_start = time.perf_counter()
             errors = check_cores(master_instance, cores)
+            _record_elapsed('core_expansion_time', time.perf_counter() - core_check_start, iteration_timing=iteration_timing)
             if len(errors) > 0:
                 for error in errors:
                     print(f'[iter {iteration_index}] [CORE] ERROR: {error}')
                 return _return(14, stop_iteration=iteration_index)
 
         # Aggiunta dei vincoli dei core nel master
+        add_start = time.perf_counter()
         if config['structure_type'] in ['fat-slim', 'fat-fat']:
             add_core_constraints_to_fat_master_model(master_model, cores) # type: ignore
         else:
             add_core_constraints_to_slim_master_model(master_model, cores) # type: ignore
+        _record_elapsed('core_constraint_add_time', time.perf_counter() - add_start, iteration_timing=iteration_timing)
 
         ############################## FINE CORE ###############################
 
         # Aggiunta dei risultati finali nella cache
         if config['use_true_cache'] or config['use_cache_selection_model']:
             print(f'[iter {iteration_index}] [CACHE] Adding final result to cache')
+            cache_update_start = time.perf_counter()
             add_final_result_to_cache(cache, master_instance, final_result, iteration_index)
+            _record_elapsed('cache_update_time', time.perf_counter() - cache_update_start, iteration_timing=iteration_timing)
 
         # Stampa delle informazioni dell'iterazione corrente appena terminata
         print(f'[iter {iteration_index}] Elapsed {int(total_time_elapsed)}/{config["total_time_limit"]}s in total')
@@ -1108,6 +1421,8 @@ def solve_instance(
                 stop_iteration=iteration_index)
         
         print(f'**************************** [END OF ITERATION {iteration_index:03}] ****************************')
+        _write_iteration_timing_artifacts()
+        current_iteration_context = None
 
         ########################### FINE ITERAZIONI ############################
 
