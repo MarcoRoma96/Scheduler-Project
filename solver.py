@@ -507,7 +507,6 @@ def solve_instance(
             stop_iteration: int | None = None) -> tuple[int, dict[str, str | int | float | None]]:
         _write_iteration_timing_artifacts()
         run_timing_payload = {f'total_{key}': value for key, value in run_timing_totals.items()}
-        run_timing_payload['wall_minus_tracked_elapsed_seconds'] = None
         return error_code, {
             'stop_reason': stop_reason,
             'stop_iteration': stop_iteration,
